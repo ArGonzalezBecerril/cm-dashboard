@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block content %}
+<form method="POST" class="panel" style="padding: 1rem 1.5rem; margin-bottom: 1.5rem;">
+    <div class="form-grid">
+        <div>
+            <label>Host CM (Master)</label>
+            <input type="text" name="host" value="{{ form.host }}" required>
+        </div>
+        <div>
+            <label>Puerto</label>
+            <input type="text" name="port" value="{{ form.port }}">
+        </div>
+        <div>
+            <label>Protocolo / API</label>
+            <div class="proto-group">
+                <select name="protocol">
+                    <option value="https" {% if form.protocol == 'https' %}selected{% endif %}>https</option>
+                    <option value="http" {% if form.protocol == 'http' %}selected{% endif %}>http</option>
+                </select>
+                <input type="text" name="api_ver" value="{{ form.api_ver }}">
+            </div>
+        </div>
+        <div>
+            <label>Usuario</label>
+            <input type="text" name="user" value="{{ form.user }}" required>
+        </div>
+        <div>
+            <label>Contraseña</label>
+            <input type="password" name="password" value="{{ form.password }}" required>
+        </div>
+    </div>
+
+    <div class="endpoint-row" style="margin-top: 0.9rem; padding-top: 0.9rem;">
+        <div>
+            <label class="cyan">Endpoint API Personalizado (Opcional)</label>
+            <input type="text" name="custom_endpoint" value="{{ form.custom_endpoint }}"
+                   placeholder="Ej: /cm/version  |  /hosts  |  /clusters/Quintana Roo/services/hdfs/roles">
+        </div>
+        <div>
+            <button type="submit">Consultar Estatus</button>
+        </div>
+    </div>
+</form>
+
+{% if error %}
+<div class="error-box"><strong>Error de conexión:</strong> {{ error }}</div>
+{% endif %}
+
+{% if data %}
+<div class="split-workspace">
+    <!-- DIV IZQUIERDO: Nodos y Servicios con Scroll -->
+    <div class="left-scroll-pane">
+        <div class="left-box-nodes">
+        <div class="section-header">
+            <h2 class="section-title" style="margin-bottom:0;">Nodos (<span id="nodes-count">{{ data.hosts|length }}</span>)</h2>
+            <div class="live-controls">
+                <span id="sync-status">Listo</span>
+                <label class="switch" style="margin-bottom:0;" title="Auto-Refresh cada 60s">
+                    <input type="checkbox" id="auto-refresh-toggle">
+                    <span class="slider"></span>
+                </label>
+                <span>60s</span>
+            </div>
+        </div>
+
+        <div class="grid-nodes nodes-resizable-grid" id="nodes-container">
+            {% for h in data.hosts %}
+            <div class="card card-clickable {{ 'card-alive' if h.is_alive else 'card-dead' }}" data-host-id="{{ h.hostId }}" onclick="inspectHost(this)">
+                <div class="card-top">
+                    <span class="ip">{{ h.ipAddress }}</span>
+                    {% if h.is_alive %}
+                        <span class="pill-on"><span class="dot-alive"></span> ON</span>
+                    {% else %}
+                        <span class="pill-off"><span class="dot-dead"></span> DEAD</span>
+                    {% endif %}
+                </div>
+                <div class="hostname" title="{{ h.hostname }}">{{ h.hostname }}</div>
+                <div class="specs">
+                    <span>CPU: <strong>{{ h.numCores }}c</strong></span>
+                    <span>RAM: <strong>{{ (h.totalPhysMemBytes / (1024**3))|round(1) }}G</strong></span>
+                    <span>HB: <strong>{{ h.hb_seconds if h.hb_seconds is not none else '?' }}s</strong></span>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+
+        </div>
+
+        <div class="left-box-services" id="clusters-container">
+        {% for cluster in data.clusters %}
+        <h2 class="section-title">Servicios • <span>{{ cluster.name }}</span></h2>
+        <div class="grid-services">
+            {% for s in cluster.services %}
+            <div class="card card-clickable" data-service="{{ s.name }}" data-cluster="{{ cluster.name }}" onclick="inspectService(this)">
+                <div class="srv-header">
+                    <div class="srv-icon">{{ s.icon_svg | safe }}</div>
+                    <div class="srv-name" title="{{ s.displayName or s.name }}">{{ s.displayName or s.name }}</div>
+                </div>
+                <div class="srv-row">
+                    <span>Estado</span>
+                    <span class="{{ 'txt-green' if s.serviceState == 'STARTED' else ('txt-neutral' if s.serviceState == 'NA' else 'txt-red') }}">{{ s.serviceState }}</span>
+                </div>
+                <div class="srv-row">
+                    <span>Salud</span>
+                    <span class="{{ 'txt-green' if s.healthSummary == 'GOOD' else 'txt-amber' }}">{{ s.healthSummary }}</span>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% endfor %}
+        </div>
+    </div>
+
+    <!-- DIV DERECHO: Panel de Inspección -->
+    <div class="right-detail-pane" id="detail-panel">
+        {% if data.custom_parsed %}
+            <h2 class="section-title">Respuesta • <span>{{ form.custom_endpoint }}</span></h2>
+            {{ data.custom_parsed | safe }}
+        {% else %}
+            <div class="detail-placeholder">
+                <div style="font-size: 1.5rem; margin-bottom: 0.5rem; color: #22d3ee;">◈</div>
+                <div style="font-weight: 600; color: #e4e4e7; margin-bottom: 0.3rem;">Panel de Inspección</div>
+                <div style="font-size: 0.8rem;">Haz clic en cualquier servicio a la izquierda (Knox, Kafka, Phoenix...) para ver en qué nodos está instalado y monitorearlo cada 30s.</div>
+            </div>
+        {% endif %}
+    </div>
+</div>
+
+<script src="{{ url_for('static', filename='dashboard.js') }}"></script>
+{% endif %}
+{% endblock %}

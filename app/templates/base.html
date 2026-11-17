@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Cloudera Manager Monitor{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <nav>
+        <div class="nav-inner">
+            <div class="brand">
+                <div class="pulse"></div>
+                <div>CLOUDERA <span>API MONITOR</span></div>
+            </div>
+            <span class="badge-ver">v1.2 • Split Workspace</span>
+        </div>
+    </nav>
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+    <footer>
+        <div class="footer-inner">
+            <span>Cloudera Manager REST Monitor • Modo Operaciones</span>
+            <span id="footer-slot">Listo</span>
+        </div>
+    </footer>
+</body>
+</html>
