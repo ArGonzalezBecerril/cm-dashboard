@@ -1,63 +1,42 @@
 import logging
-from flask import Blueprint, render_template, request, session, current_app, jsonify
-from app.services.cloudera_client import ClouderaClient
+from flask import Blueprint, render_template, request, jsonify
+from app.services.security import get_authenticated_client, cm_login_required
 from app.services.json_parser import parse_to_html
 
 dashboard_bp = Blueprint("dashboard", __name__)
 logger = logging.getLogger(__name__)
 
-def _build_client_from_session():
-    if not session.get("password"):
-        logger.warning("Intento de consulta AJAX sin password en sesión")
-        return None
-    return ClouderaClient(
-        session.get("host"), session.get("port"), session.get("protocol"),
-        session.get("api_ver"), session.get("user"), session.get("password")
-    )
-
 @dashboard_bp.route("/", methods=["GET", "POST"])
+@cm_login_required
 def index():
-    cfg = current_app.config
-    form = {
-        "host": session.get("host", cfg["CM_DEFAULT_HOST"]),
-        "port": session.get("port", cfg["CM_DEFAULT_PORT"]),
-        "protocol": session.get("protocol", cfg["CM_DEFAULT_PROTOCOL"]),
-        "api_ver": session.get("api_ver", cfg["CM_DEFAULT_API_VER"]),
-        "user": session.get("user", cfg["CM_DEFAULT_USER"]),
-        "password": session.get("password", ""),
-        "custom_endpoint": ""
-    }
+    client = get_authenticated_client()
+    custom_endpoint = ""
+    custom_parsed = None
     data = None
     error = None
 
     if request.method == "POST":
-        form.update(request.form)
-        for k in ["host", "port", "protocol", "api_ver", "user", "password"]:
-            session[k] = form[k]
+        custom_endpoint = request.form.get("custom_endpoint", "").strip()
 
-        logger.info(f"Consultando clúster en {form['protocol']}://{form['host']}:{form['port']} ({form['api_ver']})")
-        client = _build_client_from_session()
-        try:
-            hosts = client.get_hosts()
-            clusters = client.get_clusters_with_services()
-            custom_parsed = None
+    try:
+        hosts = client.get_hosts()
+        clusters = client.get_clusters_with_services()
 
-            if form["custom_endpoint"].strip():
-                raw_json = client.get(form["custom_endpoint"].strip())
-                custom_parsed = parse_to_html(raw_json)
+        if custom_endpoint:
+            raw_json = client.get(custom_endpoint)
+            custom_parsed = parse_to_html(raw_json)
 
-            data = {"hosts": hosts, "clusters": clusters, "custom_parsed": custom_parsed}
-        except Exception as e:
-            logger.error(f"Fallo en consulta principal: {e}")
-            error = str(e)
+        data = {"hosts": hosts, "clusters": clusters, "custom_parsed": custom_parsed}
+    except Exception as e:
+        logger.error(f"Fallo en consulta principal: {e}")
+        error = str(e)
 
-    return render_template("index.html", form=form, data=data, error=error)
+    return render_template("index.html", data=data, error=error, custom_endpoint=custom_endpoint)
 
 @dashboard_bp.route("/api/live-status", methods=["GET"])
+@cm_login_required
 def live_status():
-    client = _build_client_from_session()
-    if not client:
-        return jsonify({"ok": False, "error": "Sesión no iniciada"}), 401
+    client = get_authenticated_client()
     try:
         hosts = client.get_hosts()
         clusters = client.get_clusters_with_services()
@@ -67,14 +46,11 @@ def live_status():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 @dashboard_bp.route("/api/service-roles", methods=["GET"])
+@cm_login_required
 def service_roles():
     cluster = request.args.get("cluster", "")
     service = request.args.get("service", "")
-    logger.info(f"Click recibido -> cluster='{cluster}', service='{service}'")
-
-    client = _build_client_from_session()
-    if not client:
-        return jsonify({"ok": False, "error": "Sesión no iniciada (vuelve a darle Consultar Estatus)"}), 401
+    client = get_authenticated_client()
 
     if not cluster or not service:
         return jsonify({"ok": False, "error": "Faltan parámetros"}), 400
@@ -85,7 +61,6 @@ def service_roles():
 
         raw = client.get(f"/clusters/{cluster}/services/{service}/roles")
         items = raw.get("items", [])
-        logger.info(f"Roles encontrados para {service}: {len(items)}")
         roles = []
         for r in items:
             h_ref = r.get("hostRef", {})
@@ -106,13 +81,10 @@ def service_roles():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 @dashboard_bp.route("/api/host-detail", methods=["GET"])
+@cm_login_required
 def host_detail():
     host_id = request.args.get("host_id", "")
-    logger.info(f"Inspeccionando nodo -> host_id='{host_id}'")
-
-    client = _build_client_from_session()
-    if not client:
-        return jsonify({"ok": False, "error": "Sesión no iniciada (vuelve a darle Consultar Estatus)"}), 401
+    client = get_authenticated_client()
 
     if not host_id:
         return jsonify({"ok": False, "error": "Falta host_id"}), 400
@@ -122,7 +94,6 @@ def host_detail():
         dist = h.get("distribution", {})
         os_name = f"{dist.get('name', 'Linux')} {dist.get('version', '')}".strip() if isinstance(dist, dict) else str(dist or "Linux")
 
-        # Mapear estado en vivo de los roles instalados en este nodo
         role_refs = h.get("roleRefs", [])
         roles_detail = []
         services_cache = {}
@@ -149,13 +120,14 @@ def host_detail():
                 "healthSummary": role_obj.get("healthSummary", "UNKNOWN")
             })
 
-        checks = []
-        for chk in h.get("healthChecks", []):
-            checks.append({
+        checks = [
+            {
                 "name": chk.get("name", ""),
                 "summary": chk.get("summary", "UNKNOWN"),
                 "explanation": chk.get("explanation", "")
-            })
+            }
+            for chk in h.get("healthChecks", [])
+        ]
 
         payload = {
             "hostname": h.get("hostname", host_id),
@@ -176,3 +148,74 @@ def host_detail():
     except Exception as e:
         logger.error(f"Error consultando detalle del nodo {host_id}: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@dashboard_bp.route("/api/tls-check", methods=["GET"])
+@cm_login_required
+def tls_check():
+    import ssl
+    import socket
+    from datetime import datetime, timezone
+    from flask import session
+
+    client = get_authenticated_client()
+    cm_host = session.get("host", "")
+    cm_port = int(session.get("port", 7180))
+
+    targets = []
+    # Si CM corre en 7180 (HTTP), igual revisamos 7183 (TLS por defecto de CM) y el puerto configurado
+    ports_to_check = list({cm_port, 7183}) if cm_port != 7183 else [7183]
+    for p in ports_to_check:
+        targets.append({"label": f"Cloudera Manager ({cm_host}:{p})", "host": cm_host, "port": p})
+
+    try:
+        hosts_list = client.get("/hosts").get("items", [])
+        for h in hosts_list:
+            hn = h.get("hostname", "")
+            if hn:
+                # Puerto tipico de Cloudera Agent TLS (9000)
+                targets.append({"label": f"CM Agent • {hn.split('.')[0]}", "host": hn, "port": 9000})
+    except Exception as e:
+        logger.warning(f"No se pudieron listar hosts para TLS check: {e}")
+
+    results = []
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+
+    now = datetime.now(timezone.utc)
+    for t in targets:
+        try:
+            with socket.create_connection((t["host"], t["port"]), timeout=2.5) as sock:
+                with ctx.wrap_socket(sock, server_hostname=t["host"]) as ssock:
+                    der = ssock.getpeercert(binary_form=True)
+                    from cryptography import x509
+                    cert = x509.load_der_x509_certificate(der)
+                    exp = cert.not_valid_after_utc if hasattr(cert, "not_valid_after_utc") else cert.not_valid_after.replace(tzinfo=timezone.utc)
+                    days_left = (exp - now).days
+                    subject = cert.subject.rfc4514_string()
+                    issuer = cert.issuer.rfc4514_string()
+                    status = "VALID" if days_left > 30 else ("WARNING" if days_left >= 0 else "EXPIRED")
+                    results.append({
+                        "label": t["label"],
+                        "host": t["host"],
+                        "port": t["port"],
+                        "status": status,
+                        "daysLeft": days_left,
+                        "expiresAt": exp.strftime("%Y-%m-%d %H:%M UTC"),
+                        "subject": subject,
+                        "issuer": issuer
+                    })
+        except Exception as e:
+            results.append({
+                "label": t["label"],
+                "host": t["host"],
+                "port": t["port"],
+                "status": "NO_TLS",
+                "daysLeft": None,
+                "expiresAt": "Sin respuesta TLS / Puerto cerrado",
+                "subject": str(e)[:60],
+                "issuer": "-"
+            })
+
+    return jsonify({"ok": True, "certs": results})

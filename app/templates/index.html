@@ -1,46 +1,18 @@
 {% extends "base.html" %}
 {% block content %}
-<form method="POST" class="panel" style="padding: 1rem 1.5rem; margin-bottom: 1.5rem;">
-    <div class="form-grid">
-        <div>
-            <label>Host CM (Master)</label>
-            <input type="text" name="host" value="{{ form.host }}" required>
-        </div>
-        <div>
-            <label>Puerto</label>
-            <input type="text" name="port" value="{{ form.port }}">
-        </div>
-        <div>
-            <label>Protocolo / API</label>
-            <div class="proto-group">
-                <select name="protocol">
-                    <option value="https" {% if form.protocol == 'https' %}selected{% endif %}>https</option>
-                    <option value="http" {% if form.protocol == 'http' %}selected{% endif %}>http</option>
-                </select>
-                <input type="text" name="api_ver" value="{{ form.api_ver }}">
-            </div>
-        </div>
-        <div>
-            <label>Usuario</label>
-            <input type="text" name="user" value="{{ form.user }}" required>
-        </div>
-        <div>
-            <label>Contraseña</label>
-            <input type="password" name="password" value="{{ form.password }}" required>
-        </div>
+<div class="panel" style="padding: 0.75rem 1.2rem; margin-bottom: 1.25rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+    <div style="display: flex; align-items: center; gap: 10px;">
+        <button type="button" onclick="inspectCertificates()" style="width: auto; background: rgba(34, 211, 238, 0.12); color: #22d3ee; border: 1px solid rgba(34, 211, 238, 0.35); padding: 0.5rem 1rem; display: inline-flex; align-items: center; gap: 7px;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path><polyline points="9 12 11 14 15 10"></polyline></svg>
+            <span>Certificados TLS</span>
+        </button>
+        <button type="button" onclick="inspectAbout()" style="width: auto; background: rgba(255, 255, 255, 0.04); color: #d4d4d8; border: 1px solid #27272a; padding: 0.5rem 1rem; display: inline-flex; align-items: center; gap: 7px;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+            <span>Acerca de</span>
+        </button>
     </div>
-
-    <div class="endpoint-row" style="margin-top: 0.9rem; padding-top: 0.9rem;">
-        <div>
-            <label class="cyan">Endpoint API Personalizado (Opcional)</label>
-            <input type="text" name="custom_endpoint" value="{{ form.custom_endpoint }}"
-                   placeholder="Ej: /cm/version  |  /hosts  |  /clusters/Quintana Roo/services/hdfs/roles">
-        </div>
-        <div>
-            <button type="submit">Consultar Estatus</button>
-        </div>
-    </div>
-</form>
+    <span style="font-size: 0.74rem; color: #71717a; font-family: monospace;">Seguritech • Big Data Ops</span>
+</div>
 
 {% if error %}
 <div class="error-box"><strong>Error de conexión:</strong> {{ error }}</div>
@@ -128,4 +100,17 @@
 
 <script src="{{ url_for('static', filename='dashboard.js') }}"></script>
 {% endif %}
+
+<div style="margin-top: 1.5rem;">
+<form method="POST" action="{{ url_for('dashboard.index') }}" class="panel" style="padding: 1rem 1.4rem; margin-bottom: 1.5rem;">
+    <div style="display: grid; grid-template-columns: 1fr 220px; gap: 1rem; align-items: end;">
+        <div>
+            <label class="cyan" for="custom_endpoint">Endpoint API Personalizado (Opcional)</label>
+            <input type="text" id="custom_endpoint" name="custom_endpoint" value="{{ custom_endpoint or '' }}"
+                   placeholder="Ej: /cm/version | /hosts | /clusters/Quintana Roo/services/hdfs/roles">
+        </div>
+        <button type="submit">Consultar Endpoint</button>
+    </div>
+</form>
+</div>
 {% endblock %}

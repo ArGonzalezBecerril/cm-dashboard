@@ -1,3 +1,48 @@
+var certIntervalId = null;
+var certCountdownId = null;
+var certSecondsLeft = 60;
+var certMonitorActive = false;
+
+function stopCertMonitor() {
+    clearInterval(certIntervalId);
+    clearInterval(certCountdownId);
+    certIntervalId = null;
+    certCountdownId = null;
+}
+
+function startCertMonitor() {
+    stopCertMonitor();
+    certSecondsLeft = 60;
+    var st = document.getElementById("cert-sync-status");
+    if (st) st.innerHTML = '<span style="color:#22d3ee;">● ' + certSecondsLeft + 's</span>';
+
+    certCountdownId = setInterval(function() {
+        certSecondsLeft--;
+        if (certSecondsLeft <= 0) certSecondsLeft = 60;
+        var el = document.getElementById("cert-sync-status");
+        if (el) el.innerHTML = '<span style="color:#22d3ee;">● ' + certSecondsLeft + 's</span>';
+    }, 1000);
+
+    certIntervalId = setInterval(function() {
+        if (certMonitorActive && document.getElementById("cert-sync-status")) {
+            loadCertificates(true);
+        } else {
+            stopCertMonitor();
+        }
+    }, 60000);
+}
+
+function toggleCertMonitor(checkbox) {
+    certMonitorActive = checkbox.checked;
+    if (certMonitorActive) {
+        startCertMonitor();
+    } else {
+        stopCertMonitor();
+        var el = document.getElementById("cert-sync-status");
+        if (el) el.textContent = "Pausado";
+    }
+}
+
 var currentService = null;
 var currentCluster = null;
 var currentDisplayName = null;
@@ -16,6 +61,7 @@ function stopRoleMonitor() {
 
 function startRoleMonitor() {
     stopRoleMonitor();
+    stopCertMonitor();
     roleSecondsLeft = 30;
     var statusEl = document.getElementById("role-sync-status");
     if (statusEl) statusEl.innerHTML = '<span style="color:#22d3ee;">● ' + roleSecondsLeft + 's</span>';
@@ -41,6 +87,7 @@ function toggleRoleMonitor(checkbox) {
         startRoleMonitor();
     } else {
         stopRoleMonitor();
+    stopCertMonitor();
         var el = document.getElementById("role-sync-status");
         if (el) el.textContent = "Pausado";
     }
@@ -53,6 +100,7 @@ async function inspectHost(card) {
     card.classList.add("card-selected");
 
     stopRoleMonitor();
+    stopCertMonitor();
     currentService = null;
     currentHostId = card.getAttribute("data-host-id");
     var hostTitle = card.querySelector(".hostname") ? card.querySelector(".hostname").textContent.trim() : currentHostId;
@@ -128,6 +176,7 @@ async function inspectService(card) {
     card.classList.add("card-selected");
 
     stopRoleMonitor();
+    stopCertMonitor();
     currentHostId = null;
     currentService = card.getAttribute("data-service");
     currentCluster = card.getAttribute("data-cluster");
@@ -156,6 +205,7 @@ async function loadServiceRoles(isSilent) {
         if (!data.ok) {
             detailPanel.innerHTML = '<div class="error-box"><strong>Error:</strong> ' + data.error + '</div>';
             stopRoleMonitor();
+    stopCertMonitor();
             return;
         }
 
@@ -187,7 +237,11 @@ async function loadServiceRoles(isSilent) {
                     badge = '<span class="pill-off"><span class="dot-dead"></span> ' + r.roleState + '</span>';
                 }
 
-return '' + r.hostname + '' + r.type + '' + badge + 'Salud: ' + r.healthSummary + '';
+var hClass = r.healthSummary === "GOOD" ? "txt-green" : "txt-amber";
+                return '<div class="role-item">' +
+                    '<div><span class="role-host">' + r.hostname + '</span><span class="role-type">' + r.type + '</span></div>' +
+                    '<div style="text-align:right;">' + badge + '<div style="font-size:0.7rem;color:#a1a1aa;margin-top:4px;">Salud: <span class="' + hClass + '">' + r.healthSummary + '</span></div></div>' +
+                '</div>';
 }).join("");
 detailPanel.innerHTML = headerHtml + '' + rolesHtml + '';
 }
@@ -233,40 +287,208 @@ clearInterval(countdownId);
 if (syncStatus) syncStatus.textContent = "Pausado";
 }
 async function fetchLiveStatus() {
-syncStatus.innerHTML = 'Sync...';
-try {
-var res = await fetch("/api/live-status");
-var payload = await res.json();
-if (!payload.ok) { syncStatus.innerHTML = 'Err'; return; }
-renderNodes(payload.hosts);
-renderClusters(payload.clusters);
-secondsLeft = 60;
-} catch (err) {
-syncStatus.innerHTML = 'Red';
+    await fetchLiveAgent("nodes");
 }
+
+// Agente aislado: recibe 'nodes' o 'services' para actualizar solo esa seccion
+async function fetchLiveAgent(target) {
+    if (target === "nodes" && syncStatus) {
+        syncStatus.innerHTML = '<span style="color:#fbbf24;">Sync...</span>';
+    }
+    try {
+        var res = await fetch("/api/live-status");
+        var payload = await res.json();
+        if (!payload.ok) {
+            if (target === "nodes" && syncStatus) syncStatus.innerHTML = '<span style="color:#fb7185;">Err</span>';
+            return;
+        }
+        if (target === "nodes") {
+            renderNodes(payload.hosts);
+            secondsLeft = 60;
+        } else if (target === "services") {
+            renderClusters(payload.clusters);
+        }
+    } catch (err) {
+        if (target === "nodes" && syncStatus) syncStatus.innerHTML = '<span style="color:#fb7185;">Red</span>';
+    }
 }
+
 function renderNodes(hosts) {
-document.getElementById("nodes-count").textContent = hosts.length;
-document.getElementById("nodes-container").innerHTML = hosts.map(function(h) {
-var cardClass = h.is_alive ? "card-alive" : "card-dead";
-var selectedClass = (h.hostId === currentHostId) ? " card-selected" : "";
-var pillHtml = h.is_alive
-? ' ON'
-: ' DEAD';
-var ram = (h.totalPhysMemBytes / (1024 * 1024 * 1024)).toFixed(1);
-var hb = h.hb_seconds !== null ? h.hb_seconds + "s" : "?";
-return '' + h.ipAddress + '' + pillHtml + '' + h.hostname + 'CPU: ' + h.numCores + 'cRAM: ' + ram + 'GHB: ' + hb + '';
-}).join("");
+    var countEl = document.getElementById("nodes-count");
+    if (countEl) countEl.textContent = hosts.length;
+    var container = document.getElementById("nodes-container");
+    if (!container) return;
+
+    container.innerHTML = hosts.map(function(h) {
+        var cardClass = h.is_alive ? "card-alive" : "card-dead";
+        var selectedClass = (h.hostId === currentHostId) ? " card-selected" : "";
+        var pillHtml = h.is_alive
+            ? '<span class="pill-on"><span class="dot-alive"></span> ON</span>'
+            : '<span class="pill-off"><span class="dot-dead"></span> DEAD</span>';
+        var ram = (h.totalPhysMemBytes / (1024 * 1024 * 1024)).toFixed(1);
+        var hb = (h.hb_seconds !== null && h.hb_seconds !== undefined) ? h.hb_seconds + "s" : "?";
+
+        return '<div class="card card-clickable ' + cardClass + selectedClass + '" data-host-id="' + h.hostId + '" onclick="inspectHost(this)">' +
+            '<div class="card-top">' +
+                '<span class="ip">' + h.ipAddress + '</span>' +
+                pillHtml +
+            '</div>' +
+            '<div class="hostname" title="' + h.hostname + '">' + h.hostname + '</div>' +
+            '<div class="specs">' +
+                '<span>CPU: <strong>' + h.numCores + 'c</strong></span>' +
+                '<span>RAM: <strong>' + ram + 'G</strong></span>' +
+                '<span>HB: <strong>' + hb + '</strong></span>' +
+            '</div>' +
+        '</div>';
+    }).join("");
 }
+
 function renderClusters(clusters) {
-document.getElementById("clusters-container").innerHTML = clusters.map(function(c) {
-var servicesHtml = c.services.map(function(s) {
-var name = s.displayName || s.name;
-var selectedClass = (s.name === currentService) ? " card-selected" : "";
-var stateClass = s.serviceState === "STARTED" ? "txt-green" : (s.serviceState === "NA" ? "txt-neutral" : "txt-red");
-var healthClass = s.healthSummary === "GOOD" ? "txt-green" : "txt-amber";
-return '' + (s.icon_svg || "") + '' + name + 'Estado' + s.serviceState + 'Salud' + s.healthSummary + '';
-}).join("");
-return 'Servicios • ' + c.name + '' + servicesHtml + '';
-}).join("");
+    var container = document.getElementById("clusters-container");
+    if (!container) return;
+
+    container.innerHTML = clusters.map(function(c) {
+        var servicesHtml = c.services.map(function(s) {
+            var name = s.displayName || s.name;
+            var selectedClass = (s.name === currentService) ? " card-selected" : "";
+            var stateClass = s.serviceState === "STARTED" ? "txt-green" : (s.serviceState === "NA" ? "txt-neutral" : "txt-red");
+            var healthClass = s.healthSummary === "GOOD" ? "txt-green" : "txt-amber";
+
+            return '<div class="card card-clickable' + selectedClass + '" data-cluster="' + c.name + '" data-service="' + s.name + '" onclick="inspectService(this)">' +
+                '<div class="srv-header">' +
+                    '<div class="srv-icon">' + (s.icon_svg || "") + '</div>' +
+                    '<div class="srv-name" title="' + name + '">' + name + '</div>' +
+                '</div>' +
+                '<div class="srv-row"><span>Estado</span><span class="' + stateClass + '">' + s.serviceState + '</span></div>' +
+                '<div class="srv-row"><span>Salud</span><span class="' + healthClass + '">' + s.healthSummary + '</span></div>' +
+            '</div>';
+        }).join("");
+
+        return '<h2 class="section-title">Servicios • <span>' + c.name + '</span></h2>' +
+               '<div class="grid-services">' + servicesHtml + '</div>';
+    }).join("");
+}
+
+
+async function inspectCertificates() {
+    document.querySelectorAll(".card-clickable").forEach(function(c) {
+        c.classList.remove("card-selected");
+    });
+    stopRoleMonitor();
+    stopCertMonitor();
+    currentService = null;
+    currentHostId = null;
+
+    await loadCertificates(false);
+}
+
+async function loadCertificates(isSilent) {
+    var detailPanel = document.getElementById("detail-panel");
+    if (!isSilent) {
+        detailPanel.innerHTML = '<div style="padding:2rem;text-align:center;color:#22d3ee;font-size:0.85rem;">Escaneando certificados TLS del clúster...</div>';
+    } else {
+        var st = document.getElementById("cert-sync-status");
+        if (st) st.innerHTML = '<span style="color:#fbbf24;">Sync...</span>';
+    }
+
+    try {
+        var res = await fetch("/api/tls-check");
+        if (res.status === 401) {
+            stopAutoRefresh();
+            stopRoleMonitor();
+            stopCertMonitor();
+            window.location.href = "/login";
+            return;
+        }
+        var data = await res.json();
+        if (!data.ok) {
+            detailPanel.innerHTML = '<div class="error-box"><strong>Error:</strong> ' + data.error + '</div>';
+            stopCertMonitor();
+            return;
+        }
+
+        var checkedAttr = certMonitorActive ? "checked" : "";
+        var initialStatus = certMonitorActive ? '<span style="color:#22d3ee;">● 60s</span>' : "Pausado";
+
+        var cardsHtml = data.certs.map(function(c) {
+            var badge = "";
+            if (c.status === "VALID") {
+                badge = '<span class="pill-on"><span class="dot-alive"></span> ' + c.daysLeft + ' días</span>';
+            } else if (c.status === "WARNING") {
+                badge = '<span class="pill-off" style="border-color:#fbbf24;color:#fbbf24;background:rgba(251,191,36,0.12);">' + c.daysLeft + ' días</span>';
+            } else if (c.status === "EXPIRED") {
+                badge = '<span class="pill-off"><span class="dot-dead"></span> VENCIDO</span>';
+            } else {
+                badge = '<span class="badge-ver">SIN TLS</span>';
+            }
+
+            return '<div class="host-box" style="margin-bottom:0.75rem;">' +
+                '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.45rem;">' +
+                    '<strong style="color:#f4f4f5;font-size:0.85rem;">' + c.label + '</strong>' +
+                    badge +
+                '</div>' +
+                '<div style="font-size:0.74rem;color:#a1a1aa;font-family:monospace;">Expira: <strong style="color:#e4e4e7;">' + c.expiresAt + '</strong></div>' +
+                '<div style="font-size:0.7rem;color:#71717a;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="' + c.subject + '">CN: ' + c.subject + '</div>' +
+            '</div>';
+        }).join("");
+
+        detailPanel.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;padding-bottom:0.8rem;border-bottom:1px solid #27272a;flex-wrap:wrap;gap:8px;">' +
+            '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">' +
+                '<h2 class="section-title" style="margin-bottom:0;">Auditoría • <span>Certificados TLS</span></h2>' +
+                '<span class="badge-ver">' + data.certs.length + ' endpoints</span>' +
+            '</div>' +
+            '<div class="live-controls" title="Actualizar certificados automáticamente cada 60s">' +
+                '<span id="cert-sync-status">' + initialStatus + '</span>' +
+                '<label class="switch" style="margin-bottom:0;">' +
+                    '<input type="checkbox" id="cert-refresh-toggle" ' + checkedAttr + ' onchange="toggleCertMonitor(this)">' +
+                    '<span class="slider"></span>' +
+                '</label>' +
+                '<span>60s</span>' +
+            '</div>' +
+        '</div>' +
+        '<div style="max-height:calc(100vh - 340px);overflow-y:auto;padding-right:4px;">' + cardsHtml + '</div>';
+
+        certSecondsLeft = 60;
+        if (certMonitorActive && !certIntervalId) {
+            startCertMonitor();
+        }
+    } catch (err) {
+        if (!isSilent) {
+            detailPanel.innerHTML = '<div class="error-box">Error de red al auditar certificados TLS</div>';
+        }
+    }
+}
+
+function inspectAbout() {
+    document.querySelectorAll(".card-clickable").forEach(function(c) {
+        c.classList.remove("card-selected");
+    });
+    stopRoleMonitor();
+    stopCertMonitor();
+    currentService = null;
+    currentHostId = null;
+
+    var detailPanel = document.getElementById("detail-panel");
+    detailPanel.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;padding-bottom:0.8rem;border-bottom:1px solid #27272a;">' +
+        '<h2 class="section-title" style="margin-bottom:0;">Acerca de • <span>Sistema</span></h2>' +
+        '<span class="pill-on">v1.0</span></div>' +
+        '<div class="host-box">' +
+            '<div class="host-box-title">Tablero Cloudera API Monitor</div>' +
+            '<p style="font-size:0.82rem;color:#d4d4d8;line-height:1.6;margin-bottom:0.8rem;">' +
+                'Plataforma interna de observabilidad, diagnóstico en tiempo real y auditoría operativa para clústeres Cloudera sin licencia comercial.' +
+            '</p>' +
+            '<div class="kv-grid">' +
+                '<div class="kv-item"><span>Versión</span><strong>v1.0.0 (Split Workspace)</strong></div>' +
+                '<div class="kv-item"><span>Seguridad</span><strong>AES Fernet + Cloudera Auth</strong></div>' +
+                '<div class="kv-item"><span>Equipo</span><strong>Big Data • Seguritech</strong></div>' +
+                '<div class="kv-item"><span>Motor</span><strong>Python / Flask REST</strong></div>' +
+            '</div>' +
+        '</div>' +
+        '<div class="host-box" style="margin-bottom:0;">' +
+            '<div class="host-box-title">Módulos Activos v1</div>' +
+            '<div class="chk-row"><span style="color:#d4d4d8;">Telemetría de Nodos y Heartbeats</span><span class="txt-green">ACTIVO</span></div>' +
+            '<div class="chk-row"><span style="color:#d4d4d8;">Inspección de Servicios y Demonios</span><span class="txt-green">ACTIVO</span></div>' +
+            '<div class="chk-row"><span style="color:#d4d4d8;">Auditoría de Certificados TLS</span><span class="txt-green">ACTIVO</span></div>' +
+            '<div class="chk-row"><span style="color:#d4d4d8;">Consola REST API Personalizada</span><span class="txt-green">ACTIVO</span></div>' +
+        '</div>';
 }
