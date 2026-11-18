@@ -163,3 +163,466 @@ function startAutoRefresh() {
         }).join("");
     }, 60000);
 }
+
+
+
+
+/* === MÓDULO MÉTRICAS REAL-TIME (MULTI-NODO DINÁMICO 1/3) === */
+var srvMetricsTimer = null, srvAbortCtrl = null, isSrvMetricsActive = false;
+var srvCharts = {}, srvCinemaChart = null, activeCinemaKey = null, lastSrvData = null;
+
+var NODE_PALETTE = new Array("#22d3ee", "#a855f7", "#34d399", "#fbbf24", "#fb7185", "#38bdf8", "#f97316", "#e879f9", "#4ade80", "#facc15", "#60a5fa");
+
+var HDFS_CHART_META = {
+    cpu_user: { title: "HDFS • CPU Usuario por Nodo", unit: "s/s", desc: "Segundos de CPU consumidos por segundo (1.0 = 1 núcleo al 100%)" },
+    heap:     { title: "HDFS • Memoria Heap JVM",     unit: "MB",  desc: "Megabytes (MB) de memoria RAM Java en uso por el demonio" },
+    gc_time:  { title: "HDFS • Tiempo GC JVM",        unit: "ms",  desc: "Milisegundos (ms) acumulados en pausas de Garbage Collector" },
+    fd_open:  { title: "HDFS • Archivos/Sockets",     unit: "fds", desc: "Cantidad de archivos y sockets TCP abiertos por el proceso" }
+};
+
+var GEN_CHART_META = {
+    cpu_user: { title: "CPU Usuario",      unit: "s/s", desc: "Segundos de CPU usuario consumidos por segundo" },
+    cpu_sys:  { title: "CPU Sistema",      unit: "s/s", desc: "Segundos de CPU kernel/sistema consumidos por segundo" },
+    heap:     { title: "Memoria Heap JVM", unit: "MB",  desc: "Megabytes (MB) de memoria RAM Java en uso" },
+    gc_time:  { title: "Tiempo GC JVM",    unit: "ms",  desc: "Milisegundos (ms) de pausa del Garbage Collector" }
+};
+
+function getActiveMeta() {
+    var s = (currentService || "").toLowerCase();
+    return s.indexOf("hdfs") !== -1 ? HDFS_CHART_META : GEN_CHART_META;
+}
+
+function stopServiceMetrics() {
+    isSrvMetricsActive = false;
+    if (srvMetricsTimer) { clearInterval(srvMetricsTimer); srvMetricsTimer = null; }
+    if (srvAbortCtrl) { try { srvAbortCtrl.abort(); } catch (e) {} srvAbortCtrl = null; }
+    Object.keys(srvCharts).forEach(function(k) {
+        if (srvCharts[k]) { srvCharts[k].destroy(); delete srvCharts[k]; }
+    });
+}
+
+/* === MÓDULO MÉTRICAS REAL-TIME (MULTI-NODO DINÁMICO 2/3) === */
+(function initMetricsTabObserver() {
+    var dp = document.getElementById("detail-panel");
+    if (!dp) return;
+    var obs = new MutationObserver(function() {
+        if (document.getElementById("srv-metrics-tab-btn")) return;
+        var btns = Array.from(dp.querySelectorAll("button"));
+        var histBtn = btns.find(function(b) { return b.textContent.indexOf("Historial de Acciones") !== -1; });
+        if (!histBtn || !histBtn.parentElement) return;
+
+        var mBtn = document.createElement("button");
+        mBtn.type = "button";
+        mBtn.id = "srv-metrics-tab-btn";
+        mBtn.className = histBtn.className;
+        mBtn.textContent = "Métricas Real-Time";
+        mBtn.onclick = function() { openServiceMetricsTab(mBtn, histBtn.parentElement); };
+        histBtn.parentElement.appendChild(mBtn);
+
+        btns.forEach(function(otherBtn) {
+            if (otherBtn.id !== "srv-metrics-tab-btn") {
+                otherBtn.addEventListener("click", function() {
+                    stopServiceMetrics();
+                    mBtn.classList.remove("active");
+                    mBtn.style.borderColor = "";
+                    mBtn.style.color = "";
+                    var mBox = document.getElementById("srv-tab-metrics");
+                    if (mBox) mBox.style.display = "none";
+                    var sib = histBtn.parentElement.nextElementSibling;
+                    while (sib) {
+                        if (sib.id !== "srv-tab-metrics") sib.style.display = "";
+                        sib = sib.nextElementSibling;
+                    }
+                });
+            }
+        });
+    });
+    obs.observe(dp, { childList: true, subtree: true });
+})();
+
+function openServiceMetricsTab(mBtn, tabBar) {
+    var dp = document.getElementById("detail-panel");
+    if (!dp) return;
+    stopRoleMonitor();
+
+    Array.from(tabBar.querySelectorAll("button")).forEach(function(b) {
+        b.classList.remove("active");
+        b.style.borderColor = "";
+        b.style.color = "";
+    });
+    mBtn.classList.add("active");
+    mBtn.style.borderColor = "#06b6d4";
+    mBtn.style.color = "#22d3ee";
+
+    var sib = tabBar.nextElementSibling;
+    while (sib) {
+        if (sib.id !== "srv-tab-metrics") sib.style.display = "none";
+        sib = sib.nextElementSibling;
+    }
+
+    var mBox = document.getElementById("srv-tab-metrics");
+    if (!mBox) {
+        mBox = document.createElement("div");
+        mBox.id = "srv-tab-metrics";
+        mBox.style.marginTop = "1rem";
+        tabBar.insertAdjacentElement("afterend", mBox);
+    }
+    mBox.style.display = "block";
+    startServiceMetricsLoop();
+}
+
+function startServiceMetricsLoop() {
+    stopServiceMetrics(); isSrvMetricsActive = true;
+    var metaMap = getActiveMeta();
+    var box = document.getElementById("srv-tab-metrics");
+    var h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.8rem;">' +
+        '<span id="srv-alive-info" style="font-size:0.75rem;color:#a1a1aa;">Consultando nodos vivos (' + (currentService || "") + ')...</span>' +
+        '<span id="srv-live-badge" class="pill-on"><span class="dot-alive"></span> LIVE</span></div><div class="knox-metrics-grid">';
+    Object.keys(metaMap).forEach(function(k) {
+        h += '<div class="metric-mini-card"><div class="metric-card-header"><span class="metric-card-title">' +
+            metaMap[k].title + '</span><button type="button" class="metric-expand-btn" onclick="openGlassCinema(\'' + k + '\')">⛶</button>' +
+            '</div><div class="metric-canvas-wrap"><canvas id="srv-canvas-' + k + '"></canvas></div></div>';
+    });
+    box.innerHTML = h + '</div>';
+    fetchServiceMetricsNow();
+    srvMetricsTimer = setInterval(function() { isSrvMetricsActive ? fetchServiceMetricsNow() : stopServiceMetrics(); }, 5000);
+}
+
+
+
+/* === MÓDULO MÉTRICAS REAL-TIME (MULTI-NODO DINÁMICO 3/3 - SQLITE STREAM) === */
+function stopServiceMetrics() {
+    isSrvMetricsActive = false;
+    if (srvMetricsTimer) { clearInterval(srvMetricsTimer); srvMetricsTimer = null; }
+    if (srvAbortCtrl) { try { srvAbortCtrl.abort(); } catch (e) {} srvAbortCtrl = null; }
+    Object.keys(srvCharts).forEach(function(k) {
+        if (srvCharts[k]) { srvCharts[k].destroy(); delete srvCharts[k]; }
+    });
+    fetch("/api/metrics-stop", { method: "POST" }).catch(function() {});
+}
+
+function startServiceMetricsLoop() {
+    stopServiceMetrics(); isSrvMetricsActive = true;
+    var metaMap = getActiveMeta();
+    var box = document.getElementById("srv-tab-metrics");
+    var h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.8rem;">' +
+        '<span id="srv-alive-info" style="font-size:0.75rem;color:#a1a1aa;">Iniciando hilo SQLite (' + (currentService || "") + ')...</span>' +
+        '<span id="srv-live-badge" class="pill-on"><span class="dot-alive"></span> LIVE SQLITE</span></div><div class="knox-metrics-grid">';
+    Object.keys(metaMap).forEach(function(k) {
+        h += '<div class="metric-mini-card"><div class="metric-card-header"><span class="metric-card-title">' +
+            metaMap[k].title + '</span><button type="button" class="metric-expand-btn" onclick="openGlassCinema(\'' + k + '\')">⛶</button>' +
+            '</div><div class="metric-canvas-wrap"><canvas id="srv-canvas-' + k + '"></canvas></div></div>';
+    });
+    box.innerHTML = h + '</div>';
+    fetchServiceMetricsNow();
+    srvMetricsTimer = setInterval(function() { isSrvMetricsActive ? fetchServiceMetricsNow() : stopServiceMetrics(); }, 3000);
+}
+
+function formatLegendWithValue(serie, lg) {
+    if (!lg) return serie.label;
+    var lastPt = serie.points.at(-1);
+    var vStr = lastPt ? (" [" + lastPt.v + "]") : "";
+    return serie.label.replace(/\.seguritech\.com/gi, "") + vStr;
+}
+
+function syncChartInPlace(chart, seriesList, lg) {
+    var firstEl = seriesList.find(function() { return true; });
+    if (!firstEl || !firstEl.points) return;
+
+    chart.data.labels = firstEl.points.map(function(p) { return p.t; });
+    seriesList.forEach(function(serie, idx) {
+        var color = NODE_PALETTE.at(idx % NODE_PALETTE.length);
+        var ds = chart.data.datasets.at(idx);
+        var lblText = formatLegendWithValue(serie, lg);
+        if (ds) {
+            ds.label = lblText;
+            ds.data = serie.points.map(function(p) { return p.v; });
+        } else {
+            chart.data.datasets.push({
+                label: lblText,
+                data: serie.points.map(function(p) { return p.v; }),
+                borderColor: color,
+                backgroundColor: color + "18",
+                borderWidth: lg ? 2.2 : 1.6,
+                pointRadius: lg ? 3 : 1.5,
+                tension: 0.3,
+                fill: false
+            });
+        }
+    });
+    chart.update("active");
+}
+
+async function fetchServiceMetricsNow() {
+    if (!isSrvMetricsActive || !currentService) return;
+    if (srvAbortCtrl) { try { srvAbortCtrl.abort(); } catch (e) {} }
+    srvAbortCtrl = new AbortController();
+    var bg = document.getElementById("srv-live-badge");
+
+    try {
+        var r = await fetch("/api/metrics-stream?service=" + encodeURIComponent(currentService), { signal: srvAbortCtrl.signal });
+        var d = await r.json();
+        if (!isSrvMetricsActive) return;
+        if (d.ok && d.metrics) {
+            lastSrvData = d.metrics;
+            var infoEl = document.getElementById("srv-alive-info");
+            if (infoEl) {
+                infoEl.textContent = "Roles vivos: " + (d.alive_count || 0) + " • Buffer SQLite en vivo (5s)";
+            }
+            var metaMap = getActiveMeta();
+            Object.keys(metaMap).forEach(function(k) {
+                var cv = document.getElementById("srv-canvas-" + k);
+                if (!cv) return;
+                var listSeries = d.metrics[k] || new Array();
+                if (listSeries.length === 0) return;
+
+                if (srvCharts[k]) {
+                    syncChartInPlace(srvCharts[k], listSeries, false);
+                } else {
+                    srvCharts[k] = new Chart(cv.getContext("2d"), buildMultiChartCfg(k, listSeries, false));
+                }
+            });
+
+            if (activeCinemaKey && srvCinemaChart && lastSrvData[activeCinemaKey]) {
+                syncChartInPlace(srvCinemaChart, lastSrvData[activeCinemaKey], true);
+            }
+            if (bg) bg.innerHTML = '<span class="dot-alive"></span> LIVE';
+        }
+    } catch (e) { if (e.name !== "AbortError" && bg) bg.innerHTML = '<span class="dot-dead"></span> ERR'; }
+}
+
+function buildMultiChartCfg(key, rawMetric, lg) {
+    var datasets = new Array();
+    var labels = new Array("0");
+
+    var firstEl = rawMetric.find(function() { return true; });
+    if (firstEl && firstEl.points) {
+        labels = firstEl.points.map(function(p) { return p.t; });
+        rawMetric.forEach(function(serie, idx) {
+            var color = NODE_PALETTE.at(idx % NODE_PALETTE.length);
+            datasets.push({
+                label: formatLegendWithValue(serie, lg),
+                data: serie.points.map(function(p) { return p.v; }),
+                borderColor: color,
+                backgroundColor: color + "18",
+                borderWidth: lg ? 2.2 : 1.6,
+                pointRadius: lg ? 3 : 1.5,
+                tension: 0.3,
+                fill: false
+            });
+        });
+    }
+
+    return {
+        type: "line",
+        data: { labels: labels, datasets: datasets },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: { duration: 350 },
+            interaction: { mode: "index", intersect: false },
+            plugins: {
+                legend: {
+                    display: lg,
+                    position: "bottom",
+                    labels: {
+                        color: "#e4e4e7",
+                        boxWidth: 10,
+                        boxHeight: 10,
+                        padding: 10,
+                        font: { size: 11, family: "monospace" }
+                    }
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(ctx) {
+                            var meta = (getActiveMeta()[key] || {});
+                            var u = meta.unit || "";
+                            return " " + ctx.dataset.label + ": " + ctx.parsed.y + " " + u;
+                        },
+                        afterBody: function() {
+                            var meta = (getActiveMeta()[key] || {});
+                            return meta.desc ? ["", "ℹ " + meta.desc] : [];
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: { ticks: { color: "#71717a", maxTicksLimit: lg ? 10 : 4, font: { size: lg ? 11 : 9 } }, grid: { color: "#18181b" } },
+                y: { beginAtZero: true, ticks: { color: "#a1a1aa", font: { size: lg ? 11 : 9 } }, grid: { color: "#27272a" } }
+            }
+        }
+    };
+}
+
+function openGlassCinema(key) {
+    closeGlassCinema(true); activeCinemaKey = key;
+    var metaMap = getActiveMeta();
+    var ov = document.createElement("div"); ov.id = "knox-cinema-overlay"; ov.className = "glass-cinema-overlay";
+    ov.onclick = function(e) { if (e.target === ov) closeGlassCinema(false); };
+    ov.innerHTML = '<div id="knox-cinema-modal" class="glass-cinema-modal"><div class="glass-cinema-header"><span class="glass-cinema-title">' + metaMap[key].title + '</span><button type="button" class="glass-close-btn" onclick="closeGlassCinema(false)">✕</button></div><div class="glass-cinema-canvas-wrap"><canvas id="knox-cinema-canvas"></canvas></div></div>';
+    document.body.appendChild(ov);
+    var md = document.getElementById("knox-cinema-modal");
+    gsap.fromTo(ov, { opacity: 0 }, { opacity: 1, duration: 0.22 });
+    gsap.fromTo(md, { scale: 0.86, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.34, ease: "power3.out" });
+    var rawMetric = (lastSrvData && lastSrvData[key]) ? lastSrvData[key] : new Array();
+    srvCinemaChart = new Chart(document.getElementById("knox-cinema-canvas").getContext("2d"), buildMultiChartCfg(key, rawMetric, true));
+}
+
+function closeGlassCinema(imm) {
+    var ov = document.getElementById("knox-cinema-overlay"), md = document.getElementById("knox-cinema-modal");
+    if (!ov) return;
+    function del() { if (srvCinemaChart) { srvCinemaChart.destroy(); srvCinemaChart = null; } activeCinemaKey = null; if (ov.parentNode) ov.parentNode.removeChild(ov); }
+    if (imm || !md) { del(); }
+    else {
+        gsap.to(md, { scale: 0.08, opacity: 0, duration: 0.26, ease: "power3.in" });
+        gsap.to(ov, { opacity: 0, duration: 0.26, onComplete: del });
+    }
+}
+
+document.addEventListener("keydown", function(e) {
+    if (e.key === "Escape" && document.getElementById("knox-cinema-overlay")) closeGlassCinema(false);
+});
+
+
+/* === TELÓN COLAPSABLE ESTILO MACOS (GSAP) === */
+(function initWorkspaceCurtain() {
+    var dp = document.getElementById("detail-panel");
+    if (!dp) return;
+
+    var rightPane = dp;
+    while (rightPane.parentElement && rightPane.parentElement.children.length < 2) {
+        rightPane = rightPane.parentElement;
+    }
+    var workspace = rightPane.parentElement;
+    var leftPane = rightPane.previousElementSibling;
+    if (!workspace || !leftPane) return;
+
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.id = "workspace-curtain-btn";
+    btn.className = "curtain-toggle-btn";
+    btn.title = "Cerrar/Abrir panel estilo macOS";
+    btn.innerHTML = "❯";
+    document.body.appendChild(btn);
+
+    var isClosed = false;
+    var isAnimating = false;
+
+    function syncBtnPosition() {
+        if (isClosed) {
+            gsap.to(btn, { left: window.innerWidth - 34, duration: 0.45, ease: "power3.inOut" });
+            btn.innerHTML = "❮";
+        } else {
+            var lRect = leftPane.getBoundingClientRect();
+            var rRect = rightPane.getBoundingClientRect();
+            var midGap = (lRect.right + rRect.left) / 2;
+            var targetX = Math.max(12, midGap - 11);
+            gsap.to(btn, { left: targetX, duration: 0.45, ease: "power3.inOut" });
+            btn.innerHTML = "❯";
+        }
+    }
+
+    function toggleMacCurtain(closeIt) {
+        if (isAnimating || isClosed === closeIt) return;
+        isAnimating = true;
+        isClosed = closeIt;
+
+        if (closeIt) {
+            if (typeof stopServiceMetrics === "function") stopServiceMetrics();
+            if (typeof stopRoleMonitor === "function") stopRoleMonitor();
+
+            gsap.to(rightPane, {
+                x: 80, opacity: 0, scale: 0.96, duration: 0.38, ease: "power3.in",
+                onComplete: function() {
+                    rightPane.style.display = "none";
+                    workspace.style.gridTemplateColumns = "1fr";
+                    leftPane.style.width = "100%";
+                    var grids = leftPane.querySelectorAll(".cards-grid, .nodes-grid, .services-grid");
+                    grids.forEach(function(g) { g.style.gridTemplateColumns = "repeat(auto-fill, minmax(260px, 1fr))"; });
+                    gsap.fromTo(leftPane.querySelectorAll(".card-clickable"),
+                        { scale: 0.97, opacity: 0.85 },
+                        { scale: 1, opacity: 1, duration: 0.35, stagger: 0.02, ease: "back.out(1.4)" }
+                    );
+                    isAnimating = false;
+                }
+            });
+            syncBtnPosition();
+        } else {
+            workspace.style.gridTemplateColumns = "minmax(0, 1fr) minmax(0, 1fr)";
+            var grids = leftPane.querySelectorAll(".cards-grid, .nodes-grid, .services-grid");
+            grids.forEach(function(g) { g.style.gridTemplateColumns = ""; });
+
+            rightPane.style.display = "";
+            gsap.fromTo(rightPane,
+                { x: 90, opacity: 0, scale: 0.96 },
+                {
+                    x: 0, opacity: 1, scale: 1, duration: 0.48, ease: "power3.out",
+                    onComplete: function() { isAnimating = false; syncBtnPosition(); }
+                }
+            );
+            setTimeout(syncBtnPosition, 40);
+        }
+    }
+
+    btn.onclick = function() { toggleMacCurtain(!isClosed); };
+
+    document.addEventListener("click", function(e) {
+        if (!isClosed) return;
+        if (e.target.closest(".card-clickable") || e.target.closest("#btn-tls") || e.target.closest("#btn-about")) {
+            toggleMacCurtain(false);
+        }
+    });
+
+    // Evitar que los canvas de las gráficas deformen el 50/50 del grid
+    workspace.style.gridTemplateColumns = "minmax(0, 1fr) minmax(0, 1fr)";
+    leftPane.style.minWidth = "0";
+    rightPane.style.minWidth = "0";
+
+    // Reacomodar la flecha automáticamente cada vez que el panel derecho cambie de tamaño
+    if (typeof ResizeObserver !== "undefined") {
+        var ro = new ResizeObserver(function() {
+            if (!isAnimating) syncBtnPosition();
+        });
+        ro.observe(rightPane);
+        ro.observe(workspace);
+    }
+
+    window.addEventListener("resize", syncBtnPosition);
+    setTimeout(syncBtnPosition, 150);
+})();
+
+
+/* === TOOLTIP EN MEDIDAS DEL EJE AL PASAR EL CURSOR === */
+(function initAxisUnitHover() {
+    var tip = document.createElement("div");
+    tip.id = "axis-unit-tooltip";
+    tip.style.cssText = "position:fixed;z-index:10050;pointer-events:none;display:none;background:rgba(9,9,11,0.92);border:1px solid #22d3ee;color:#f4f4f5;padding:6px 10px;border-radius:8px;font-size:11px;box-shadow:0 8px 20px rgba(0,0,0,0.7);max-width:280px;";
+    document.body.appendChild(tip);
+
+    document.addEventListener("mousemove", function(e) {
+        var cv = e.target;
+        if (!cv || cv.tagName !== "CANVAS") { tip.style.display = "none"; return; }
+        var chart = Chart.getChart(cv);
+        if (!chart || !chart.scales || !chart.scales.y) { tip.style.display = "none"; return; }
+
+        var rect = cv.getBoundingClientRect();
+        var x = e.clientX - rect.left;
+        var y = e.clientY - rect.top;
+        var yScale = chart.scales.y;
+
+        // Solo activar si el cursor está sobre la columna de los números del eje Y
+        if (x >= yScale.left && x <= yScale.right && y >= yScale.top && y <= yScale.bottom) {
+            var key = cv.id === "knox-cinema-canvas" ? activeCinemaKey : cv.id.replace("srv-canvas-", "");
+            var meta = (getActiveMeta()[key] || {});
+            if (meta.unit) {
+                tip.innerHTML = "<strong style='color:#22d3ee;'>Unidad: " + meta.unit + "</strong><br><span style='color:#a1a1aa;'>" + meta.desc + "</span>";
+                tip.style.left = (e.clientX + 14) + "px";
+                tip.style.top = (e.clientY - 12) + "px";
+                tip.style.display = "block";
+                return;
+            }
+        }
+        tip.style.display = "none";
+    });
+})();

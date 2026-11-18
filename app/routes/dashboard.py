@@ -272,3 +272,163 @@ def service_history():
             except Exception:
                 pass
     return jsonify({"ok": True, "history": items})
+
+@dashboard_bp.route("/api/service-metrics", methods=["GET"])
+@cm_login_required
+def service_metrics():
+    from datetime import datetime, timedelta, timezone
+
+    service = request.args.get("service", "")
+    if not service:
+        return jsonify({"ok": False, "error": "Falta service"}), 400
+
+    client = get_authenticated_client()
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(minutes=30)
+    from_str = start.strftime("%Y-%m-%dT%H:%M:%SZ")
+    to_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    queries = {
+        "cpu_user": f"SELECT cpu_user_rate WHERE serviceName = '{service}'",
+        "cpu_sys":  f"SELECT cpu_system_rate WHERE serviceName = '{service}'",
+        "heap":     f"SELECT jvm_heap_used_mb WHERE serviceName = '{service}'",
+        "gc_time":  f"SELECT jvm_gc_time_ms WHERE serviceName = '{service}'"
+    }
+
+    series_out = {}
+    for key, tsq in queries.items():
+        try:
+            endpoint = f"/timeseries?query={tsq}&from={from_str}&to={to_str}"
+            raw = client.get(endpoint)
+            items = raw.get("items") or list()
+            points = list()
+            if len(items) > 0:
+                first_item = next(iter(items))
+                ts_list = first_item.get("timeSeries") or list()
+                if len(ts_list) > 0:
+                    best_ts = max(ts_list, key=lambda x: len(x.get("data") or list()))
+                    data_pts = best_ts.get("data") or list()
+                    for pt in data_pts[-25:]:
+                        ts_raw = pt.get("timestamp", "")
+                        label = ts_raw[11:19] if len(ts_raw) >= 19 else ts_raw
+                        points.append({"t": label, "v": round(float(pt.get("value", 0)), 2)})
+            series_out[key] = points
+        except Exception as e:
+            logger.warning(f"Error consultando {key} en {service}: {e}")
+            series_out[key] = list()
+
+    return jsonify({"ok": True, "service": service, "metrics": series_out})
+
+@dashboard_bp.route("/api/hdfs-metrics", methods=["GET"])
+@cm_login_required
+def hdfs_metrics():
+    from datetime import datetime, timedelta, timezone
+
+    cluster = request.args.get("cluster", "")
+    service = request.args.get("service", "hdfs")
+    client = get_authenticated_client()
+
+    # 0. Mapa hostId -> nombre corto real (cbgdtqroo01, cbgdtqroo02, etc.)
+    host_map = {}
+    try:
+        hosts_data = client.get("/hosts")
+        for h in (hosts_data.get("items") or list()):
+            h_id = h.get("hostId", "")
+            h_name = h.get("hostname", "")
+            if h_id and h_name:
+                host_map[h_id] = h_name.split(".")[0]
+    except Exception as e:
+        logger.warning(f"No se pudo mapear hostId a hostname: {e}")
+
+    # 1. Detectar dinámicamente qué roles/nodos de HDFS están vivos (STARTED)
+    alive_roles = {}
+    try:
+        if not cluster:
+            cl_data = client.get("/clusters")
+            cl_items = cl_data.get("items") or list()
+            if len(cl_items) > 0:
+                cluster = next(iter(cl_items)).get("name", "")
+        if cluster:
+            roles_data = client.get(f"/clusters/{cluster}/services/{service}/roles")
+            for r in (roles_data.get("items") or list()):
+                if r.get("roleState") == "STARTED":
+                    r_name = r.get("name", "")
+                    href = r.get("hostRef") or {}
+                    raw_host = href.get("hostname") or host_map.get(href.get("hostId", ""), "nodo")
+                    host_short = str(raw_host).split(".")[0]
+                    r_type = r.get("type", "ROLE")
+                    alive_roles[r_name] = f"{host_short} • {r_type}"
+    except Exception as e:
+        logger.warning(f"No se pudo filtrar roles vivos de HDFS: {e}")
+
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(minutes=30)
+    from_str = start.strftime("%Y-%m-%dT%H:%M:%SZ")
+    to_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    queries = {
+        "cpu_user": f"SELECT cpu_user_rate WHERE serviceName = '{service}'",
+        "heap":     f"SELECT jvm_heap_used_mb WHERE serviceName = '{service}'",
+        "gc_time":  f"SELECT jvm_gc_time_ms WHERE serviceName = '{service}'",
+        "fd_open":  f"SELECT fd_open WHERE serviceName = '{service}'"
+    }
+
+    series_out = {}
+    for key, tsq in queries.items():
+        try:
+            raw = client.get(f"/timeseries?query={tsq}&from={from_str}&to={to_str}")
+            items = raw.get("items") or list()
+            multi_series = list()
+            if len(items) > 0:
+                ts_list = next(iter(items)).get("timeSeries") or list()
+                for ts in ts_list:
+                    meta = ts.get("metadata") or {}
+                    attrs = meta.get("attributes") or {}
+                    r_name = attrs.get("roleName") or meta.get("entityName") or ""
+
+                    if alive_roles and r_name not in alive_roles:
+                        continue
+
+                    raw_h = attrs.get("hostname") or host_map.get(attrs.get("hostId", ""), "nodo")
+                    host_short = str(raw_h).split(".")[0]
+                    r_type = attrs.get("roleType") or "HDFS"
+                    label = alive_roles.get(r_name, f"{host_short} • {r_type}")
+
+                    pts = list()
+                    for pt in (ts.get("data") or list())[-25:]:
+                        ts_raw = pt.get("timestamp", "")
+                        t_lbl = ts_raw[11:19] if len(ts_raw) >= 19 else ts_raw
+                        pts.append({"t": t_lbl, "v": round(float(pt.get("value", 0)), 2)})
+
+                    if len(pts) > 0:
+                        multi_series.append({"label": label, "points": pts})
+
+            multi_series.sort(key=lambda x: x.get("label", ""))
+            series_out[key] = multi_series
+        except Exception as e:
+            logger.warning(f"Error en métrica HDFS {key}: {e}")
+            series_out[key] = list()
+
+    return jsonify({"ok": True, "service": service, "alive_count": len(alive_roles), "metrics": series_out})
+
+@dashboard_bp.route("/api/metrics-stream", methods=["GET"])
+@cm_login_required
+def metrics_stream():
+    from app.services.metrics_store import ensure_collector_running, read_series_from_db
+
+    service = request.args.get("service", "")
+    if not service:
+        return jsonify({"ok": False, "error": "Falta service"}), 400
+
+    client = get_authenticated_client()
+    ensure_collector_running(service, client)
+    metrics_data, alive_count = read_series_from_db(service, limit_per_node=25)
+    return jsonify({"ok": True, "service": service, "alive_count": alive_count, "metrics": metrics_data})
+
+
+@dashboard_bp.route("/api/metrics-stop", methods=["POST"])
+@cm_login_required
+def metrics_stop():
+    from app.services.metrics_store import stop_all_collectors
+    stop_all_collectors()
+    return jsonify({"ok": True})

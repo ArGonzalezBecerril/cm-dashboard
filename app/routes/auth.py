@@ -1,3 +1,4 @@
+from app.services.metrics_store import clear_all_metrics
 import logging
 from flask import Blueprint, render_template, request, session, redirect, url_for, current_app
 from app.services.security import validate_cloudera_login, encrypt_secret, decrypt_secret
@@ -9,6 +10,7 @@ logger = logging.getLogger(__name__)
 def login():
     # Si ya tiene sesión activa válida, mandar directo al dashboard
     if session.get("enc_password") and decrypt_secret(session.get("enc_password")):
+        clear_all_metrics()
         return redirect(url_for("dashboard.index"))
 
     cfg = current_app.config
@@ -47,6 +49,7 @@ def login():
                 session["enc_password"] = encrypt_secret(password)
 
                 logger.info(f"Login exitoso -> {user}@{protocol}://{host}:{port} ({api_ver})")
+                clear_all_metrics()
                 return redirect(url_for("dashboard.index"))
             else:
                 logger.warning(f"Login fallido para {user}@{host}:{port} -> {err_msg}")
