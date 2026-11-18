@@ -335,3 +335,171 @@ footer {
     min-height: 115px !important;
     max-height: 360px !important;
 }
+
+/* Menu desplegable estilo PrimeFaces / Cloudera Acciones */
+.cm-action-wrap { position: relative; display: inline-block; }
+.cm-action-btn {
+    background: linear-gradient(135deg, rgba(34, 211, 238, 0.16), rgba(6, 182, 212, 0.08));
+    color: #22d3ee;
+    border: 1px solid rgba(34, 211, 238, 0.38);
+    padding: 5px 12px;
+    border-radius: 999px;
+    font-size: 0.76rem;
+    font-weight: 700;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.2s ease;
+    width: auto;
+}
+.cm-action-btn:hover { background: rgba(34, 211, 238, 0.25); box-shadow: 0 0 14px rgba(34, 211, 238, 0.25); }
+.cm-action-menu {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 6px);
+    min-width: 175px;
+    background: rgba(15, 18, 25, 0.96);
+    backdrop-filter: blur(18px);
+    border: 1px solid rgba(34, 211, 238, 0.28);
+    border-radius: 12px;
+    padding: 6px;
+    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.85);
+    z-index: 50;
+    opacity: 0;
+    transform: translateY(-8px) scale(0.97);
+    pointer-events: none;
+    transition: opacity 0.24s cubic-bezier(0.22, 1, 0.36, 1), transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.cm-action-menu.open {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    pointer-events: auto;
+}
+.cm-menu-item {
+    width: 100%;
+    background: transparent;
+    border: none;
+    color: #e4e4e7;
+    padding: 8px 10px;
+    border-radius: 8px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    transition: background 0.15s ease, transform 0.15s ease;
+}
+.cm-menu-item:hover { background: rgba(255, 255, 255, 0.08); transform: translateX(2px); }
+
+/* Spinner estilo Cloudera Manager y consola de ejecucion */
+@keyframes cmSpin { 100% { transform: rotate(360deg); } }
+.cm-spinner {
+    width: 26px;
+    height: 26px;
+    border: 3px solid rgba(34, 211, 238, 0.18);
+    border-top-color: #22d3ee;
+    border-radius: 50%;
+    animation: cmSpin 0.85s linear infinite;
+    margin: 0 auto;
+}
+.cm-exec-box {
+    background: rgba(7, 9, 14, 0.92);
+    border: 1px solid rgba(34, 211, 238, 0.35);
+    border-radius: 12px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+.cm-console-log {
+    background: #050608;
+    border: 1px solid #1f242d;
+    border-radius: 8px;
+    padding: 0.65rem 0.8rem;
+    font-family: monospace;
+    font-size: 0.72rem;
+    color: #cbd5e1;
+    max-height: 150px;
+    overflow-y: auto;
+    margin-top: 0.75rem;
+    line-height: 1.5;
+}
+
+.cm-action-wrap { position: relative; display: inline-block; }
+.cm-action-btn { background: rgba(34, 211, 238, 0.15); color: #22d3ee; border: 1px solid rgba(34, 211, 238, 0.4); padding: 5px 12px; border-radius: 999px; font-size: 0.76rem; font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; width: auto; }
+.cm-action-menu { position: absolute; right: 0; top: calc(100% + 6px); min-width: 170px; background: #0f1219; border: 1px solid rgba(34, 211, 238, 0.35); border-radius: 12px; padding: 6px; box-shadow: 0 18px 40px rgba(0,0,0,0.85); z-index: 99; display: none; }
+.cm-action-menu.open { display: block; }
+.cm-menu-item { width: 100%; background: transparent; border: none; color: #e4e4e7; padding: 8px 10px; border-radius: 8px; font-size: 0.78rem; font-weight: 600; text-align: left; cursor: pointer; display: flex; align-items: center; gap: 8px; }
+.cm-menu-item:hover { background: rgba(255, 255, 255, 0.08); }
+@keyframes cmSpin { 100% { transform: rotate(360deg); } }
+.cm-spinner { width: 26px; height: 26px; border: 3px solid rgba(34, 211, 238, 0.2); border-top-color: #22d3ee; border-radius: 50%; animation: cmSpin 0.85s linear infinite; margin: 0 auto; }
+.cm-exec-box { background: #07090e; border: 1px solid rgba(34, 211, 238, 0.35); border-radius: 12px; padding: 1rem; margin-bottom: 1rem; }
+.cm-console-log { background: #050608; border: 1px solid #1f242d; border-radius: 8px; padding: 0.65rem 0.8rem; font-family: monospace; font-size: 0.72rem; color: #cbd5e1; max-height: 150px; overflow-y: auto; margin-top: 0.75rem; line-height: 1.5; }
+
+/* Tabs estilo Cloudera / PrimeFaces dentro del panel de servicio */
+.cm-tabs-bar { display: flex; gap: 6px; border-bottom: 1px solid #27272a; margin-bottom: 1rem; padding-bottom: 0; }
+.cm-tab-btn {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 6px 6px 0 0;
+    color: #a1a1aa;
+    font-size: 0.78rem;
+    font-weight: 600;
+    padding: 0.55rem 1rem;
+    cursor: pointer;
+    width: auto;
+    transition: all 0.2s ease;
+    margin-bottom: -1px;
+}
+.cm-tab-btn:hover { color: #f4f4f5; background: rgba(255, 255, 255, 0.04); }
+.cm-tab-btn.active { color: #22d3ee; border-bottom-color: #22d3ee; background: rgba(34, 211, 238, 0.08); }
+.cm-tab-pane { display: none; }
+.cm-tab-pane.active { display: block; }
+
+/* 3 puntitos verdes esmeralda estilo lombriz / onda para RUNNING */
+.worm-loader {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: rgba(16, 185, 129, 0.1);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+}
+.worm-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background-color: #10b981;
+    box-shadow: 0 0 6px #10b981;
+    animation: wormWave 1.2s infinite ease-in-out;
+}
+.worm-dot:nth-child(1) { animation-delay: 0s; }
+.worm-dot:nth-child(2) { animation-delay: 0.2s; }
+.worm-dot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes wormWave {
+    0%, 60%, 100% {
+        transform: scale(0.65);
+        opacity: 0.45;
+    }
+    30% {
+        transform: scale(1.45);
+        opacity: 1;
+        box-shadow: 0 0 10px #34d399;
+    }
+}
+
+/* Scrollbar interno para Bitacora de Operaciones cuando supera el limite del panel */
+#service-history-box {
+    max-height: 340px;
+    overflow-y: auto;
+    padding-right: 6px;
+}
+#service-history-box::-webkit-scrollbar { width: 6px; }
+#service-history-box::-webkit-scrollbar-track { background: rgba(9, 11, 16, 0.6); border-radius: 999px; }
+#service-history-box::-webkit-scrollbar-thumb { background: rgba(34, 211, 238, 0.28); border-radius: 999px; }
+#service-history-box::-webkit-scrollbar-thumb:hover { background: rgba(34, 211, 238, 0.55); }

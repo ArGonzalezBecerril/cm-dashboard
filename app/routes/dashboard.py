@@ -1,3 +1,4 @@
+from app.services.state_db import sync_and_detect_anomalies, dismiss_missing_service, log_service_action, update_service_action_status, get_service_action_history
 import logging
 from flask import Blueprint, render_template, request, jsonify
 from app.services.security import get_authenticated_client, cm_login_required
@@ -26,7 +27,8 @@ def index():
             raw_json = client.get(custom_endpoint)
             custom_parsed = parse_to_html(raw_json)
 
-        data = {"hosts": hosts, "clusters": clusters, "custom_parsed": custom_parsed}
+        alerts = sync_and_detect_anomalies(clusters, client)
+        data = {"hosts": hosts, "clusters": clusters, "custom_parsed": custom_parsed, "alerts": alerts}
     except Exception as e:
         logger.error(f"Fallo en consulta principal: {e}")
         error = str(e)
@@ -219,3 +221,54 @@ def tls_check():
             })
 
     return jsonify({"ok": True, "certs": results})
+
+@dashboard_bp.route("/api/service-command", methods=["POST"])
+@cm_login_required
+def service_command():
+    from flask import session
+    from app.services.state_db import log_service_action
+    p = request.get_json(silent=True) or {}
+    c, s, d, a = p.get("cluster", ""), p.get("service", ""), p.get("display_name", ""), p.get("action", "").lower()
+    if a not in ["start", "stop", "restart"] or not c or not s:
+        return jsonify({"ok": False, "error": "Parámetros inválidos"}), 400
+    try:
+        resp = get_authenticated_client().post(f"/clusters/{c}/services/{s}/commands/{a}")
+        cmd_id = resp.get("id")
+        log_service_action(c, s, d or s, a, cmd_id, session.get("user", "admin"))
+        return jsonify({"ok": True, "commandId": cmd_id, "name": resp.get("name", a.upper())})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@dashboard_bp.route("/api/command-status/<int:cmd_id>", methods=["GET"])
+@cm_login_required
+def command_status(cmd_id):
+    from app.services.state_db import update_service_action_status
+    try:
+        cmd = get_authenticated_client().get(f"/commands/{cmd_id}")
+        active = bool(cmd.get("active", False)); success = bool(cmd.get("success", False)) if not active else None; msg = cmd.get("resultMessage") or ("Operación completada correctamente." if success else "")
+        children = [{"name": ch.get("name", ""), "active": ch.get("active", False), "success": ch.get("success", None), "resultMessage": ch.get("resultMessage", "")} for ch in cmd.get("children", {}).get("items", [])]
+        if not active:
+            update_service_action_status(cmd_id, "SUCCESS" if success else "FAILED", msg)
+        return jsonify({"ok": True, "id": cmd_id, "name": cmd.get("name", ""), "active": active, "success": success, "resultMessage": msg, "children": children})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@dashboard_bp.route("/api/service-history", methods=["GET"])
+@cm_login_required
+def service_history():
+    from app.services.state_db import get_service_action_history, update_service_action_status
+    c = request.args.get("cluster", "")
+    s = request.args.get("service", "")
+    items = get_service_action_history(c, s, 25)
+    client = get_authenticated_client()
+    for it in items:
+        if it.get("status") == "RUNNING" and it.get("command_id"):
+            try:
+                cmd = client.get(f"/commands/{it['command_id']}")
+                if not cmd.get("active", False):
+                    st = "SUCCESS" if cmd.get("success", False) else "FAILED"
+                    update_service_action_status(it["command_id"], st, cmd.get("resultMessage", ""))
+                    it["status"] = st
+            except Exception:
+                pass
+    return jsonify({"ok": True, "history": items})

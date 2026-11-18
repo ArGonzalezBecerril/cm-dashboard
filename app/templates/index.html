@@ -113,4 +113,58 @@
     </div>
 </form>
 </div>
+
+{% if data and data.alerts %}
+<div id="anomaly-modal" style="position:fixed;inset:0;z-index:9999;background:rgba(5,7,10,0.78);backdrop-filter:blur(10px);display:flex;align-items:center;justify-content:center;padding:1.5rem;">
+    <div style="width:100%;max-width:540px;background:rgba(18,20,27,0.92);border:1px solid rgba(244,63,94,0.45);border-radius:18px;padding:1.8rem;box-shadow:0 25px 60px rgba(0,0,0,0.85),0 0 30px rgba(244,63,94,0.18);">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;padding-bottom:0.8rem;border-bottom:1px solid rgba(255,255,255,0.08);">
+            <div style="display:flex;align-items:center;gap:10px;">
+                <span style="width:10px;height:10px;border-radius:50%;background:#f43f5e;box-shadow:0 0 10px #f43f5e;"></span>
+                <h3 style="font-size:1rem;color:#fff;letter-spacing:0.3px;">Anomalías Detectadas en el Clúster ({{ data.alerts|length }})</h3>
+            </div>
+            <button type="button" onclick="document.getElementById('anomaly-modal').remove()" style="width:auto;background:transparent;color:#a1a1aa;padding:4px 8px;font-size:1.1rem;">✕</button>
+        </div>
+
+        <div style="max-height:320px;overflow-y:auto;display:flex;flex-direction:column;gap:0.8rem;margin-bottom:1.3rem;">
+            {% for a in data.alerts %}
+            <div id="alert-card-{{ loop.index }}" style="background:rgba(9,11,16,0.85);border:1px solid {{ 'rgba(244,63,94,0.35)' if a.type == 'MISSING' else 'rgba(251,191,36,0.35)' }};border-radius:12px;padding:0.95rem 1rem;">
+                <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:0.4rem;">
+                    <strong style="color:{{ '#fb7185' if a.type == 'MISSING' else '#fbbf24' }};font-size:0.88rem;">{{ a.title }}</strong>
+                    <span class="badge-ver" style="font-size:0.68rem;">{{ a.cluster }}</span>
+                </div>
+                <p style="font-size:0.78rem;color:#d4d4d8;line-height:1.45;">{{ a.detail }}</p>
+                {% if a.type == 'MISSING' %}
+                <div style="margin-top:0.65rem;text-align:right;">
+                    <button type="button" onclick="dismissMissing('{{ a.cluster }}', '{{ a.service_name }}', 'alert-card-{{ loop.index }}')"
+                            style="width:auto;font-size:0.72rem;padding:4px 10px;background:rgba(34,211,238,0.12);color:#22d3ee;border:1px solid rgba(34,211,238,0.3);">
+                        Confirmar baja (Actualizar línea base)
+                    </button>
+                </div>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+
+        <div style="display:flex;justify-content:flex-end;">
+            <button type="button" onclick="document.getElementById('anomaly-modal').remove()" style="width:auto;padding:0.6rem 1.4rem;">Entendido</button>
+        </div>
+    </div>
+</div>
+<script>
+async function dismissMissing(cluster, service, cardId) {
+    try {
+        const res = await fetch("/api/dismiss-alert", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({cluster: cluster, service: service})
+        });
+        const data = await res.json();
+        if (data.ok) {
+            const el = document.getElementById(cardId);
+            if (el) el.style.opacity = "0.4";
+        }
+    } catch (e) {}
+}
+</script>
+{% endif %}
 {% endblock %}

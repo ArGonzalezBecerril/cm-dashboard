@@ -26,6 +26,18 @@ class ClouderaClient:
         resp.raise_for_status()
         return resp.json()
 
+
+    def post(self, endpoint, payload=None):
+        if not endpoint.startswith("/"):
+            endpoint = f"/{endpoint}"
+        safe_endpoint = quote(endpoint, safe="/?=&")
+        url = f"{self.base_url}{safe_endpoint}"
+        logger.info(f"POST -> {url}")
+        resp = requests.post(url, json=payload, auth=self.auth, verify=False, timeout=10)
+        logger.info(f"RESP <- {resp.status_code} ({len(resp.content)} bytes)")
+        resp.raise_for_status()
+        return resp.json()
+
     def get_hosts(self):
         hosts = self.get("/hosts?view=full").get("items", [])
         now = datetime.now(timezone.utc)
