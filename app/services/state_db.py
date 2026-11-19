@@ -70,3 +70,52 @@ def sync_and_detect_anomalies(clusters_data, client):
             if key not in seen_keys:
                 alerts.append({"type": "MISSING", "service_name": prev["service_name"], "display_name": prev["display_name"], "cluster": prev["cluster_name"], "title": f"El servicio {prev['display_name']} ya no existe en el clúster", "detail": f"Última vez visto: {prev['last_seen']}"})
     return alerts
+
+
+def _ensure_role_log_table():
+    with _get_conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS role_actions_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cluster_name TEXT,
+                service_name TEXT,
+                role_name TEXT,
+                role_type TEXT,
+                hostname TEXT,
+                action TEXT,
+                command_id INTEGER,
+                executed_by TEXT,
+                executed_at TEXT,
+                status TEXT DEFAULT 'RUNNING',
+                result_message TEXT
+            )
+        """)
+
+
+def log_role_action(cluster_name, service_name, role_name, role_type, hostname, action, command_id, executed_by):
+    _ensure_role_log_table()
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    with _get_conn() as conn:
+        conn.execute(
+            "INSERT INTO role_actions_log (cluster_name, service_name, role_name, role_type, hostname, action, command_id, executed_by, executed_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'RUNNING')",
+            (cluster_name, service_name, role_name, role_type, hostname, action, command_id, executed_by, now_iso),
+        )
+
+
+def get_running_role_commands(cluster_name, service_name):
+    _ensure_role_log_table()
+    with _get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, role_name, action, command_id, status FROM role_actions_log WHERE cluster_name = ? AND service_name = ? AND status = 'RUNNING' ORDER BY id DESC",
+            (cluster_name, service_name),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def update_role_action_status(command_id, status, result_message=""):
+    _ensure_role_log_table()
+    with _get_conn() as conn:
+        conn.execute(
+            "UPDATE role_actions_log SET status = ?, result_message = ? WHERE command_id = ?",
+            (status, result_message, command_id),
+        )

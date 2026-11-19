@@ -73,7 +73,24 @@ async function loadServiceRoles(isSilent) {
         var rolesHtml = data.roles.map(function(r) {
             var b = r.roleState === "STARTED" ? '<span class="pill-on"><span class="dot-alive"></span> ' + r.roleState + '</span>' : '<span class="pill-off">' + r.roleState + '</span>';
             var hc = r.healthSummary === "GOOD" ? "txt-green" : "txt-amber";
-            return '<div class="role-item"><div><span class="role-host">' + r.hostname + '</span><span class="role-type">' + r.type + '</span></div><div style="text-align:right;">' + b + '<div style="font-size:0.7rem;color:#a1a1aa;margin-top:4px;">Salud: <span class="' + hc + '">' + r.healthSummary + '</span></div></div></div>';
+            var slotId = "role-ctrl-" + r.name.replace(/[^a-zA-Z0-9_-]/g, "_");
+            var ctrlHtml = "";
+            if (r.activeCommand && r.activeCommand.status === "RUNNING") {
+                var actLabels = { start: "INICIANDO...", stop: "DETENIENDO...", restart: "REINICIANDO..." };
+                var aTxt = actLabels[r.activeCommand.action] || "EJECUTANDO...";
+                ctrlHtml = '<div style="display:inline-flex;align-items:center;gap:6px;margin-top:6px;background:rgba(34,211,238,0.1);border:1px solid rgba(34,211,238,0.35);padding:3px 9px;border-radius:7px;">' +
+                    '<span class="worm-loader"><span class="worm-dot"></span><span class="worm-dot"></span><span class="worm-dot"></span></span>' +
+                    '<span style="font-size:0.68rem;font-weight:800;color:#22d3ee;">' + aTxt + '</span></div>';
+            } else if (r.controllable !== false) {
+                ctrlHtml = '<div style="display:inline-flex;gap:4px;margin-top:6px;">' +
+                    '<button type="button" title="Iniciar instancia" data-rname="' + r.name + '" data-rtype="' + r.type + '" data-rhost="' + r.hostname + '" data-ract="start" onclick="triggerSingleRoleBtn(this)" style="width:24px!important;height:22px!important;padding:0!important;background:#18181b!important;color:#34d399!important;border:1px solid #27272a!important;border-radius:6px!important;font-size:0.65rem!important;cursor:pointer;">▶</button>' +
+                    '<button type="button" title="Detener instancia" data-rname="' + r.name + '" data-rtype="' + r.type + '" data-rhost="' + r.hostname + '" data-ract="stop" onclick="triggerSingleRoleBtn(this)" style="width:24px!important;height:22px!important;padding:0!important;background:#18181b!important;color:#fb7185!important;border:1px solid #27272a!important;border-radius:6px!important;font-size:0.65rem!important;cursor:pointer;">■</button>' +
+                    '<button type="button" title="Reiniciar instancia" data-rname="' + r.name + '" data-rtype="' + r.type + '" data-rhost="' + r.hostname + '" data-ract="restart" onclick="triggerSingleRoleBtn(this)" style="width:24px!important;height:22px!important;padding:0!important;background:#18181b!important;color:#22d3ee!important;border:1px solid #27272a!important;border-radius:6px!important;font-size:0.72rem!important;cursor:pointer;">↻</button></div>';
+            }
+            return '<div class="role-item"><div><span class="role-host">' + r.hostname + '</span><span class="role-type">' + r.type + '</span></div>' +
+                '<div style="text-align:right;">' + b +
+                '<div style="font-size:0.7rem;color:#a1a1aa;margin-top:4px;">Salud: <span class="' + hc + '">' + r.healthSummary + '</span></div>' +
+                '<div id="' + slotId + '">' + ctrlHtml + '</div></div></div>';
         }).join("");
 
         // Si es refresco silencioso (30s) y ya existe la estructura, solo actualiza contenido interno sin borrar el progreso
@@ -107,6 +124,7 @@ async function loadServiceRoles(isSilent) {
         detailPanel.innerHTML = headerHtml + tabsNav + paneRoles + paneHistory + execContainer;
         if (typeof loadServiceHistory === "function") loadServiceHistory();
         if (isOn && !roleIntervalId) startRoleMonitor();
+        (data.roles || []).forEach(function(r) { if (r.activeCommand && r.activeCommand.status === "RUNNING") watchSingleRoleCommand(r.name, r.activeCommand.commandId, r.activeCommand.action); });
     } catch (e) {
         if (!isSilent) detailPanel.innerHTML = '<div class="error-box">Error de red al consultar servicio</div>';
     }
@@ -1450,3 +1468,140 @@ async function execNodeRoleCmd(e, host, service, roleType, action) {
 }
 
 setInterval(runNodeEnhancer, 450);
+
+/* === CONTROL GRANULAR POR INSTANCIA (SIN COMILLAS ESCAPADAS) === */
+var _roleWatchTimers = {};
+
+function triggerSingleRoleBtn(btn) {
+    var rName = btn.getAttribute("data-rname");
+    var rType = btn.getAttribute("data-rtype");
+    var rHost = btn.getAttribute("data-rhost");
+    var rAct = btn.getAttribute("data-ract");
+    triggerSingleRoleCmd(rName, rType, rHost, rAct);
+}
+
+async function triggerSingleRoleCmd(roleName, roleType, hostname, action) {
+    if (!currentCluster || !currentService) return;
+    var labels = { start: "INICIAR", stop: "DETENER", restart: "REINICIAR" };
+    if (!confirm("¿Confirmas " + (labels[action] || action) + " la instancia " + roleType + " en " + hostname + "?")) return;
+
+    var slotId = "role-ctrl-" + roleName.replace(/[^a-zA-Z0-9_-]/g, "_");
+    var slot = document.getElementById(slotId);
+    if (slot) {
+        slot.innerHTML = "<div style='display:inline-flex;align-items:center;gap:6px;margin-top:6px;background:rgba(34,211,238,0.1);border:1px solid rgba(34,211,238,0.35);padding:3px 9px;border-radius:7px;'>" +
+            "<span class='worm-loader'><span class='worm-dot'></span><span class='worm-dot'></span><span class='worm-dot'></span></span>" +
+            "<span style='font-size:0.68rem;font-weight:800;color:#22d3ee;'>ENVIANDO...</span></div>";
+    }
+
+    try {
+        var res = await fetch("/api/role-command", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                cluster: currentCluster,
+                service: currentService,
+                role_name: roleName,
+                role_type: roleType,
+                hostname: hostname,
+                action: action
+            })
+        });
+        var d = await res.json();
+        if (!d.ok) {
+            alert("Error: " + (d.error || "No se pudo ejecutar"));
+            loadServiceRoles(true);
+            return;
+        }
+        watchSingleRoleCommand(roleName, d.commandId, action);
+    } catch (e) {
+        alert("Error de red: " + e.message);
+        loadServiceRoles(true);
+    }
+}
+
+function watchSingleRoleCommand(roleName, cmdId, action) {
+    if (!cmdId) return;
+    if (_roleWatchTimers[roleName]) clearTimeout(_roleWatchTimers[roleName]);
+
+    var actLabels = { start: "INICIANDO...", stop: "DETENIENDO...", restart: "REINICIANDO..." };
+    var slotId = "role-ctrl-" + roleName.replace(/[^a-zA-Z0-9_-]/g, "_");
+
+    async function pollOne() {
+        var slot = document.getElementById(slotId);
+        if (!slot) {
+            delete _roleWatchTimers[roleName];
+            return;
+        }
+        try {
+            var r = await fetch("/api/command-status/" + cmdId);
+            var st = await r.json();
+            if (!st.ok) return;
+
+            if (st.active) {
+                slot.innerHTML = "<div style='display:inline-flex;align-items:center;gap:6px;margin-top:6px;background:rgba(34,211,238,0.1);border:1px solid rgba(34,211,238,0.35);padding:3px 9px;border-radius:7px;'>" +
+                    "<span class='worm-loader'><span class='worm-dot'></span><span class='worm-dot'></span><span class='worm-dot'></span></span>" +
+                    "<span style='font-size:0.68rem;font-weight:800;color:#22d3ee;'>" + (actLabels[action] || "EJECUTANDO...") + "</span></div>";
+                _roleWatchTimers[roleName] = setTimeout(pollOne, 3000);
+            } else {
+                delete _roleWatchTimers[roleName];
+                var ok = !!st.success;
+                slot.innerHTML = ok
+                    ? "<span style='display:inline-block;margin-top:6px;font-size:0.7rem;font-weight:800;color:#34d399;background:rgba(16,185,129,0.14);border:1px solid rgba(16,185,129,0.35);padding:2px 9px;border-radius:6px;'>✔ SUCCESS</span>"
+                    : "<span style='display:inline-block;margin-top:6px;font-size:0.7rem;font-weight:800;color:#fb7185;background:rgba(244,63,94,0.14);border:1px solid rgba(244,63,94,0.35);padding:2px 9px;border-radius:6px;'>✖ FAILED</span>";
+                setTimeout(function() {
+                    if (typeof loadServiceRoles === "function" && currentService) loadServiceRoles(true);
+                }, 2200);
+            }
+        } catch (e) {
+            _roleWatchTimers[roleName] = setTimeout(pollOne, 4000);
+        }
+    }
+    pollOne();
+}
+
+
+/* === BOTON WEB UI POR SERVICIO (ESTILO TAB) === */
+var _lastWebUiCheckedKey = "";
+
+async function syncServiceWebUiButton(tabBar) {
+    if (!tabBar || !currentCluster || !currentService) return;
+    var key = currentCluster + "::" + currentService;
+    if (_lastWebUiCheckedKey == key && document.getElementById("srv-webui-tab-btn")) return;
+    _lastWebUiCheckedKey = key;
+
+    var oldBtn = document.getElementById("srv-webui-tab-btn");
+    if (oldBtn && oldBtn.parentNode) oldBtn.parentNode.removeChild(oldBtn);
+
+    try {
+        var r = await fetch("/api/service-webui?cluster=" + encodeURIComponent(currentCluster) + "&service=" + encodeURIComponent(currentService));
+        var d = await r.json();
+        if (!d.ok || !d.has_webui || !d.url) return;
+        if (_lastWebUiCheckedKey != key || document.getElementById("srv-webui-tab-btn")) return;
+
+        var wBtn = document.createElement("button");
+        wBtn.type = "button";
+        wBtn.id = "srv-webui-tab-btn";
+        wBtn.className = "cm-tab-btn";
+        wBtn.title = "Abrir interfaz web nativa: " + d.url;
+        wBtn.style.cssText = "border-color:rgba(16,185,129,0.4)!important;color:#34d399!important;";
+        wBtn.textContent = "Web UI ↗";
+        wBtn.onclick = function() {
+            window.open(d.url, "_blank", "noopener,noreferrer");
+        };
+        tabBar.appendChild(wBtn);
+
+        if (typeof gsap !== "undefined") {
+            gsap.fromTo(wBtn, { opacity: 0, scale: 0.9 }, { opacity: 1, scale: 1, duration: 0.22, ease: "back.out(1.6)" });
+        }
+    } catch (e) {}
+}
+
+setInterval(function() {
+    var dp = document.getElementById("detail-panel");
+    if (!dp || !currentService) { _lastWebUiCheckedKey = ""; return; }
+    var tabBar = dp.querySelector(".cm-tabs-bar");
+    var mBtn = document.getElementById("srv-metrics-tab-btn");
+    if (tabBar && mBtn) {
+        syncServiceWebUiButton(tabBar);
+    }
+}, 400);

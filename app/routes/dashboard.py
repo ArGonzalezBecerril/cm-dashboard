@@ -50,6 +50,8 @@ def live_status():
 @dashboard_bp.route("/api/service-roles", methods=["GET"])
 @cm_login_required
 def service_roles():
+    from app.services.state_db import get_running_role_commands, update_role_action_status
+
     cluster = request.args.get("cluster", "")
     service = request.args.get("service", "")
     client = get_authenticated_client()
@@ -58,29 +60,63 @@ def service_roles():
         return jsonify({"ok": False, "error": "Faltan parámetros"}), 400
 
     try:
-        hosts_list = client.get("/hosts").get("items", [])
+        # Verificar comandos granulares en curso en SQLite contra /commands/{id}
+        running_rows = get_running_role_commands(cluster, service)
+        active_by_role = {}
+        for rr in running_rows:
+            r_name = rr.get("role_name", "")
+            cid = rr.get("command_id")
+            if r_name in active_by_role or not cid:
+                continue
+            try:
+                cmd = client.get(f"/commands/{cid}")
+                if cmd.get("active", False):
+                    active_by_role[r_name] = {
+                        "commandId": cid,
+                        "action": rr.get("action", ""),
+                        "status": "RUNNING",
+                    }
+                else:
+                    ok = bool(cmd.get("success", False))
+                    st = "SUCCESS" if ok else "FAILED"
+                    update_role_action_status(cid, st, cmd.get("resultMessage", ""))
+            except Exception:
+                active_by_role[r_name] = {
+                    "commandId": cid,
+                    "action": rr.get("action", ""),
+                    "status": "RUNNING",
+                }
+
+        hosts_list = client.get("/hosts").get("items") or list()
         hosts_map = {h.get("hostId"): h.get("hostname", "") for h in hosts_list}
 
         raw = client.get(f"/clusters/{cluster}/services/{service}/roles")
-        items = raw.get("items", [])
-        roles = []
+        items = raw.get("items") or list()
+        roles = list()
         for r in items:
-            h_ref = r.get("hostRef", {})
+            h_ref = r.get("hostRef") or {}
             h_id = h_ref.get("hostId", "")
             full_host = h_ref.get("hostname") or hosts_map.get(h_id) or h_id or "Sin host"
-            short_host = full_host.split(".")[0]
+            short_host = full_host.split(".").pop(0) if "." in full_host else full_host
+            r_name = r.get("name", "")
+            r_type = str(r.get("type", ""))
+            r_state = r.get("roleState", "UNKNOWN")
+            is_gw = ("GATEWAY" in r_type.upper()) or ("CLIENT" in r_type.upper()) or (r_state == "NA")
             roles.append({
-                "name": r.get("name"),
-                "type": r.get("type"),
+                "name": r_name,
+                "type": r_type,
                 "hostname": short_host,
                 "hostId": h_id,
-                "roleState": r.get("roleState", "UNKNOWN"),
-                "healthSummary": r.get("healthSummary", "UNKNOWN")
+                "roleState": r_state,
+                "healthSummary": r.get("healthSummary", "UNKNOWN"),
+                "controllable": not is_gw,
+                "activeCommand": active_by_role.get(r_name),
             })
         return jsonify({"ok": True, "service": service, "cluster": cluster, "roles": roles})
     except Exception as e:
         logger.error(f"Error consultando roles de {service}: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
+
 
 @dashboard_bp.route("/api/host-detail", methods=["GET"])
 @cm_login_required
@@ -807,3 +843,141 @@ def node_role_action():
         return jsonify({"ok": True, "roles": matched, "command": cmd_res})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@dashboard_bp.route("/api/role-command", methods=["POST"])
+@cm_login_required
+def single_role_command():
+    from flask import session
+    from app.services.state_db import log_role_action
+
+    p = request.get_json(silent=True) or {}
+    cluster = str(p.get("cluster", "")).strip()
+    service = str(p.get("service", "")).strip()
+    role_name = str(p.get("role_name", "")).strip()
+    role_type = str(p.get("role_type", "")).strip()
+    hostname = str(p.get("hostname", "")).strip()
+    action = str(p.get("action", "")).strip().lower()
+
+    if action not in ("start", "stop", "restart") or not cluster or not service or not role_name:
+        return jsonify({"ok": False, "error": "Parámetros inválidos"}), 400
+
+    try:
+        resp = get_authenticated_client().post(
+            f"/clusters/{cluster}/services/{service}/roleCommands/{action}",
+            json={"items": [role_name]},
+        )
+        # Cloudera devuelve BulkCommandList o ApiCommand
+        cmd_obj = resp
+        if isinstance(resp, dict) and "items" in resp and len(resp.get("items") or list()):
+            cmd_obj = next(iter(resp.get("items")))
+        cmd_id = cmd_obj.get("id")
+        log_role_action(cluster, service, role_name, role_type, hostname, action, cmd_id, session.get("user", "admin"))
+        return jsonify({"ok": True, "commandId": cmd_id, "roleName": role_name, "action": action})
+    except Exception as e:
+        logger.error(f"[RoleCommand] Error ejecutando {action} en {role_name}: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@dashboard_bp.route("/api/service-webui", methods=["GET"])
+@cm_login_required
+def service_webui_url():
+    cluster = str(request.args.get("cluster", "")).strip()
+    service = str(request.args.get("service", "")).strip()
+    if not cluster or not service:
+        return jsonify({"ok": False, "has_webui": False}), 400
+
+    client = get_authenticated_client()
+    try:
+        srv = client.get(f"/clusters/{cluster}/services/{service}")
+        srv_type = str(srv.get("type") or "").upper()
+
+        # Catálogo nativo: (roleType, http_port_key, def_http, https_port_key, def_https, path, force_tls)
+        native_map = {
+            "YARN": ("RESOURCEMANAGER", "resourcemanager_webserver_port", 8088, "resourcemanager_https_port", 8090, "/cluster", False),
+            "HDFS": ("NAMENODE", "dfs_http_port", 9870, "dfs_https_port", 9871, "/dfshealth.html", False),
+            "HBASE": ("MASTER", "hbase_master_info_port", 16010, "hbase_master_info_port", 16010, "/master-status", False),
+            "SPARK_ON_YARN": ("SPARK_YARN_HISTORY_SERVER", "history_server_web_port", 18088, "ssl_server_port", 18488, "/", False),
+            "LIVY_FOR_SPARK3": ("LIVY_SERVER", "livy_server_port", 8998, "livy_server_port", 8998, "/ui", False),
+            "LIVY": ("LIVY_SERVER", "livy_server_port", 8998, "livy_server_port", 8998, "/ui", False),
+            "RANGER": ("RANGER_ADMIN", "ranger_service_http_port", 6080, "ranger_service_https_port", 6182, "/", False),
+            "ATLAS": ("ATLAS_SERVER", "atlas_server_http_port", 21000, "atlas_server_https_port", 31443, "/", False),
+            "OOZIE": ("OOZIE_SERVER", "oozie_http_port", 11000, "oozie_https_port", 11443, "/oozie", False),
+            "SOLR": ("SOLR_SERVER", "solr_http_port", 8983, "solr_https_port", 8985, "/solr", False),
+            "HUE": ("HUE_SERVER", "hue_web_port", 8888, "hue_web_https_port", 8889, "/hue/accounts/login", False),
+            "KNOX": ("KNOX_GATEWAY", "gateway_port", 8443, "gateway_port", 8443, "/gateway/manager/admin-ui/", True),
+            "IMPALA": ("IMPALAD", "webserver_port", 25000, "webserver_port", 25000, "/", False),
+            "HIVE": ("HIVESERVER2", "hiveserver2_webui_port", 10002, "hiveserver2_webui_port", 10002, "/", False),
+            "HIVE_ON_TEZ": ("HIVESERVER2", "hiveserver2_webui_port", 10002, "hiveserver2_webui_port", 10002, "/", False),
+            "NIFI": ("NIFI_NODE", "nifi.web.http.port", 8080, "nifi.web.https.port", 8443, "/nifi", False),
+        }
+
+        if srv_type not in native_map:
+            return jsonify({"ok": True, "has_webui": False, "url": "", "service_type": srv_type})
+
+        r_target, k_http, def_http, k_https, def_https, path_suffix, force_tls = native_map[srv_type]
+        hosts_map = {h.get("hostId"): h.get("hostname", "") for h in (client.get("/hosts").get("items") or list())}
+        roles = (client.get(f"/clusters/{cluster}/services/{service}/roles").get("items") or list())
+
+        # Elegir primero el rol ACTIVE si existe HA; si no, el primer STARTED
+        chosen_role = None
+        for r in roles:
+            if str(r.get("type", "")).upper() == r_target and r.get("roleState") == "STARTED":
+                if str(r.get("haStatus", "")).upper() == "ACTIVE":
+                    chosen_role = r
+                    break
+                if not chosen_role:
+                    chosen_role = r
+
+        if not chosen_role:
+            return jsonify({"ok": True, "has_webui": False, "url": "", "service_type": srv_type})
+
+        href = chosen_role.get("hostRef") or {}
+        hname = href.get("hostname") or hosts_map.get(href.get("hostId"), "")
+        role_name = chosen_role.get("name", "")
+
+        # Leer configuración real del servicio y del rol para sacar puerto y SSL exactos
+        cfg = {}
+        try:
+            s_cfg = client.get(f"/clusters/{cluster}/services/{service}/config?view=full")
+            for item in (s_cfg.get("items") or list()):
+                val = item.get("value") if item.get("value") is not None else item.get("default")
+                if val is not None:
+                    cfg[item.get("name")] = str(val)
+        except Exception:
+            pass
+
+        try:
+            r_cfg = client.get(f"/clusters/{cluster}/services/{service}/roles/{role_name}/config?view=full")
+            for item in (r_cfg.get("items") or list()):
+                val = item.get("value") if item.get("value") is not None else item.get("default")
+                if val is not None:
+                    cfg[item.get("name")] = str(val)
+        except Exception:
+            pass
+
+        from flask import session
+        cm_is_https = str(session.get("protocol", "")).lower() == "https"
+        has_hue_cert = bool(cfg.get("ssl_certificate") or cfg.get("ssl_private_key"))
+        ssl_enabled = force_tls or has_hue_cert or (srv_type == "HUE" and cm_is_https) or any(
+            str(cfg.get(k, "")).lower() == "true"
+            for k in ("ssl_enabled", "hdfs_hadoop_ssl_enabled", "hadoop_secure_web_ui", "resourcemanager_ssl_enabled", "hbase_ssl_enabled", "hive_ssl_enabled")
+        )
+
+        port_val = cfg.get(k_https if ssl_enabled else k_http)
+        try:
+            port = int(port_val) if port_val else (def_https if ssl_enabled else def_http)
+        except ValueError:
+            port = def_https if ssl_enabled else def_http
+
+        proto = "https" if ssl_enabled else "http"
+        web_url = f"{proto}://{hname}:{port}{path_suffix}"
+
+        return jsonify({
+            "ok": True,
+            "has_webui": True,
+            "url": web_url,
+            "service_type": srv_type,
+        })
+    except Exception as e:
+        logger.warning(f"[WebUI] No se pudo resolver UI nativa para {service}: {e}")
+        return jsonify({"ok": True, "has_webui": False, "url": ""})
