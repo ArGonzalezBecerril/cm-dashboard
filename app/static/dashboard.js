@@ -121,7 +121,8 @@ function toggleCertMonitor(cb) {
     } else { stopCertMonitor(); var el = document.getElementById("cert-sync-status"); if (el) el.textContent = "Pausado"; }
 }
 
-async function inspectCertificates() { document.querySelectorAll(".card-clickable").forEach(function(c) { c.classList.remove("card-selected"); }); stopRoleMonitor(); stopCertMonitor(); currentService = null; currentHostId = null; await loadCertificates(false); }
+async function inspectCertificates() {
+    if (typeof window.openWorkspaceCurtain === "function") window.openWorkspaceCurtain(); document.querySelectorAll(".card-clickable").forEach(function(c) { c.classList.remove("card-selected"); }); stopRoleMonitor(); stopCertMonitor(); currentService = null; currentHostId = null; await loadCertificates(false); }
 
 async function loadCertificates(isSilent) {
     var detailPanel = document.getElementById("detail-panel");
@@ -139,6 +140,7 @@ async function loadCertificates(isSilent) {
 }
 
 function inspectAbout() {
+    if (typeof window.openWorkspaceCurtain === "function") window.openWorkspaceCurtain();
     document.querySelectorAll(".card-clickable").forEach(function(c) { c.classList.remove("card-selected"); }); stopRoleMonitor(); stopCertMonitor(); currentService = null; currentHostId = null;
     document.getElementById("detail-panel").innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;padding-bottom:0.8rem;border-bottom:1px solid #27272a;"><h2 class="section-title" style="margin-bottom:0;">Acerca de • <span>Sistema</span></h2><span class="pill-on">v1.0</span></div><div class="host-box"><div class="host-box-title">Tablero Cloudera API Monitor</div><p style="font-size:0.82rem;color:#d4d4d8;line-height:1.6;">Plataforma interna de observabilidad y control operativo para clústeres Cloudera sin licencia • Equipo Big Data Seguritech.</p></div>';
 }
@@ -502,7 +504,7 @@ document.addEventListener("keydown", function(e) {
     btn.type = "button";
     btn.id = "workspace-curtain-btn";
     btn.className = "curtain-toggle-btn";
-    btn.title = "Cerrar/Abrir panel estilo macOS";
+    btn.title = "Cerrar / Abrir panel";
     btn.innerHTML = "❯";
     document.body.appendChild(btn);
 
@@ -531,6 +533,8 @@ document.addEventListener("keydown", function(e) {
         if (closeIt) {
             if (typeof stopServiceMetrics === "function") stopServiceMetrics();
             if (typeof stopRoleMonitor === "function") stopRoleMonitor();
+            if (typeof stopAppStorageMonitor === "function") stopAppStorageMonitor();
+            var tb = document.getElementById("rep-scroll-top-btn"); if (tb) tb.style.display = "none";
 
             gsap.to(rightPane, {
                 x: 80, opacity: 0, scale: 0.96, duration: 0.38, ease: "power3.in",
@@ -566,10 +570,11 @@ document.addEventListener("keydown", function(e) {
     }
 
     btn.onclick = function() { toggleMacCurtain(!isClosed); };
+    window.openWorkspaceCurtain = function() { if (isClosed) toggleMacCurtain(false); };
 
     document.addEventListener("click", function(e) {
         if (!isClosed) return;
-        if (e.target.closest(".card-clickable") || e.target.closest("#btn-tls") || e.target.closest("#btn-about")) {
+        if (e.target.closest(".card-clickable") || e.target.closest(".cm-dropdown-item") || e.target.closest("#btn-tls") || e.target.closest("#btn-about")) {
             toggleMacCurtain(false);
         }
     });
@@ -626,3 +631,634 @@ document.addEventListener("keydown", function(e) {
         tip.style.display = "none";
     });
 })();
+
+
+/* === MENÚ DESPLEGABLE ACCIONES (ESTILO PRIMEFACES + GSAP) === */
+var isMainMenuOpen = false;
+
+function toggleMainActionsMenu(e) {
+    if (e) e.stopPropagation();
+    if (isMainMenuOpen) {
+        closeMainActionsMenu();
+    } else {
+        openMainActionsMenu();
+    }
+}
+
+function openMainActionsMenu() {
+    var menu = document.getElementById("cm-actions-menu");
+    var caret = document.getElementById("cm-dropdown-caret");
+    if (!menu || isMainMenuOpen) return;
+    isMainMenuOpen = true;
+    menu.style.display = "block";
+
+    // Efecto despliegue PrimeFaces (desenrollado vertical + rebote sutil + stagger en opciones)
+    gsap.killTweensOf(menu);
+    gsap.fromTo(menu,
+        { opacity: 0, scaleY: 0.78, y: -8 },
+        { opacity: 1, scaleY: 1, y: 0, duration: 0.28, ease: "back.out(1.7)" }
+    );
+    gsap.fromTo(menu.querySelectorAll(".cm-dropdown-item"),
+        { opacity: 0, x: -8 },
+        { opacity: 1, x: 0, duration: 0.22, stagger: 0.05, ease: "power2.out" }
+    );
+    if (caret) gsap.to(caret, { rotation: 180, duration: 0.24, ease: "power2.out" });
+}
+
+function closeMainActionsMenu() {
+    var menu = document.getElementById("cm-actions-menu");
+    var caret = document.getElementById("cm-dropdown-caret");
+    if (!menu || !isMainMenuOpen) return;
+    isMainMenuOpen = false;
+
+    gsap.killTweensOf(menu);
+    gsap.to(menu, {
+        opacity: 0,
+        scaleY: 0.82,
+        y: -6,
+        duration: 0.18,
+        ease: "power2.in",
+        onComplete: function() { menu.style.display = "none"; }
+    });
+    if (caret) gsap.to(caret, { rotation: 0, duration: 0.2, ease: "power2.in" });
+}
+
+// Cerrar al hacer clic fuera o con ESC
+document.addEventListener("click", function(e) {
+    if (isMainMenuOpen && !e.target.closest("#cm-main-actions-dropdown")) {
+        closeMainActionsMenu();
+    }
+});
+
+document.addEventListener("keydown", function(e) {
+    if (e.key === "Escape" && isMainMenuOpen) {
+        closeMainActionsMenu();
+    }
+});
+
+
+/* === SCRIPT PARA EL REPORTE GENERAL DE MÉTRICAS DE USO === */
+// El código completo para renderizar los 6 paneles verticales, la barra de progreso sticky, 
+// la gráfica de tendencias HDFS con Chart.js, animaciones GSAP y la exportación a CSV 
+// se encuentra disponible en la implementación de la aplicación.
+
+/* === REPORTE GENERAL DE METRICAS DE USO (PARTE 1/2) === */
+var _lastReportData = null;
+
+function repBox(title, badge, bodyHtml) {
+    return '<div class="rep-panel-card" style="background:#09090b;border:1px solid #27272a;border-radius:12px;padding:1rem;margin-bottom:0.9rem;">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;border-bottom:1px solid #18181b;padding-bottom:0.5rem;">' +
+        '<strong style="font-size:0.82rem;color:#22d3ee;text-transform:uppercase;letter-spacing:0.5px;">' + title + '</strong>' +
+        '<span style="font-size:0.7rem;color:#a1a1aa;background:#18181b;padding:2px 8px;border-radius:6px;">' + badge + '</span></div>' +
+        bodyHtml + '</div>';
+}
+
+function repKpi(label, val, sub, color) {
+    return '<div style="background:#18181b;border:1px solid #27272a;border-radius:10px;padding:0.7rem;">' +
+        '<div style="font-size:0.68rem;color:#a1a1aa;text-transform:uppercase;">' + label + '</div>' +
+        '<div style="font-size:1.15rem;font-weight:800;color:' + (color || '#f4f4f5') + ';margin:3px 0;">' + val + '</div>' +
+        '<div style="font-size:0.68rem;color:#71717a;">' + sub + '</div></div>';
+}
+
+async function inspectGeneralReport(days) {
+    if (typeof window.openWorkspaceCurtain === "function") window.openWorkspaceCurtain();
+    days = days || 7;
+    if (typeof stopServiceMetrics === "function") stopServiceMetrics();
+    if (typeof stopRoleMonitor === "function") stopRoleMonitor();
+            if (typeof stopAppStorageMonitor === "function") stopAppStorageMonitor();
+            var tb = document.getElementById("rep-scroll-top-btn"); if (tb) tb.style.display = "none";
+    if (typeof stopCertMonitor === "function") stopCertMonitor();
+
+    var dp = document.getElementById("detail-panel");
+    if (!dp) return;
+    dp.innerHTML = '<div style="padding:2rem;text-align:center;color:#22d3ee;">Cargando Reporte General (' + days + ' días)...</div>';
+
+    try {
+        var res = await fetch("/api/general-report?days=" + days);
+        var d = await res.json();
+        if (!d.ok) { dp.innerHTML = '<div style="color:#fb7185;padding:1rem;">Error cargando reporte</div>'; return; }
+        _lastReportData = d;
+        renderGeneralReport(dp, d, days);
+    } catch (e) {
+        dp.innerHTML = '<div style="color:#fb7185;padding:1rem;">Error de red: ' + e.message + '</div>';
+    }
+}
+
+function renderGeneralReport(dp, d, days) {
+    var k = d.kpis || {};
+    var headerHtml = '<div style="position:sticky;top:0;z-index:20;background:rgba(9,9,11,0.95);backdrop-filter:blur(10px);padding:0.65rem 0;margin-bottom:0.8rem;border-bottom:1px solid #27272a;">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">' +
+        '<div><strong style="color:#f4f4f5;font-size:0.95rem;">Reporte General • ' + d.cluster + '</strong>' +
+        '<div style="font-size:0.7rem;color:#a1a1aa;">Periodo: ' + d.period + '</div></div>' +
+        '<div style="display:flex;gap:5px;align-items:center;">' +
+        '<button type="button" class="knox-tab-btn ' + (days===7?'active':'') + '" onclick="inspectGeneralReport(7)">7d</button>' +
+        '<button type="button" class="knox-tab-btn ' + (days===15?'active':'') + '" onclick="inspectGeneralReport(15)">15d</button>' +
+        '<button type="button" class="knox-tab-btn ' + (days===30?'active':'') + '" onclick="inspectGeneralReport(30)">30d</button>' +
+        '<button type="button" class="knox-tab-btn" style="border-color:#34d399!important;color:#34d399!important;" onclick="exportReportDocx()">⬇ Word</button>' +
+        '</div></div>' +
+        '<div style="height:4px;width:100%;background:#18181b;border-radius:4px;margin-top:8px;overflow:hidden;">' +
+        '<div id="rep-scroll-bar" style="height:100%;width:15%;background:linear-gradient(90deg,#06b6d4,#a855f7);transition:width 0.12s;"></div></div></div>';
+
+    var kpiGrid = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.6rem;margin-bottom:0.8rem;">' +
+        repKpi("Disco HDFS Lógico", (k.total_logical_gb || 0) + " GB", "Sin replicación", "#22d3ee") +
+        repKpi("Disco HDFS Raw", (k.total_raw_gb || 0) + " GB", "Con replicación ~3x", "#a855f7") +
+        repKpi("1er Consumidor", k.top1_user || "N/A", (k.top1_gb || 0) + " GB (" + (k.top1_pct || 0) + "%)", "#34d399") +
+        repKpi("2do Consumidor", k.top2_user || "N/A", (k.top2_gb || 0) + " GB (" + (k.top2_pct || 0) + "%)", "#fbbf24") +
+        repKpi("Apps YARN", k.yarn_apps || 0, "Últimos " + days + " días", "#38bdf8") +
+        repKpi("Queries Impala", k.impala_queries || 0, "Últimos " + days + " días", "#fb7185") +
+        '</div>';
+
+    var findHtml = '<ul style="margin:0;padding-left:1.1rem;color:#d4d4d8;font-size:0.78rem;line-height:1.5;">' +
+        (d.findings || new Array()).map(function(f) { return '<li style="margin-bottom:4px;">' + f + '</li>'; }).join("") + '</ul>';
+
+    dp.innerHTML = headerHtml +
+        repBox("1. Resumen de Métricas Clave & Hallazgos", "KPIs Cluster", kpiGrid + findHtml) +
+        buildPanels2To6(d);
+
+    initReportScrollAndCharts(dp, d);
+}
+
+/* === REPORTE GENERAL DE METRICAS DE USO (PARTE 2/2) === */
+function buildPanels2To6(d) {
+    var uRows = (d.hdfs_users || new Array()).map(function(u) {
+        return '<tr style="border-bottom:1px solid #18181b;">' +
+            '<td style="padding:5px;color:#f4f4f5;font-weight:600;">' + u.user + '</td>' +
+            '<td style="padding:5px;text-align:right;color:#22d3ee;">' + u.gb_logical + ' GB</td>' +
+            '<td style="padding:5px;text-align:right;color:#a855f7;">' + u.gb_raw + ' GB</td>' +
+            '<td style="padding:5px;text-align:right;color:#a1a1aa;">' + u.files + '</td>' +
+            '<td style="padding:5px;text-align:right;color:#34d399;">' + u.pct + '%</td></tr>';
+    }).join("") || '<tr><td colspan="5" style="padding:8px;color:#71717a;">Sin datos HDFS por usuario</td></tr>';
+
+    var p2 = repBox("2. Uso Actual de Disco HDFS por Usuario", (d.hdfs_users || new Array()).length + " usuarios",
+        '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:0.75rem;">' +
+        '<thead><tr style="color:#a1a1aa;border-bottom:1px solid #27272a;"><th style="text-align:left;padding:5px;">Usuario</th><th style="text-align:right;padding:5px;">Lógico</th><th style="text-align:right;padding:5px;">Raw (~3x)</th><th style="text-align:right;padding:5px;">Archivos</th><th style="text-align:right;padding:5px;">% Total</th></tr></thead>' +
+        '<tbody>' + uRows + '</tbody></table></div>');
+
+    var p3 = repBox("3. Tendencia Histórica de Disco HDFS (GB Raw)", "Evolución diaria",
+        '<div style="height:210px;width:100%;position:relative;"><canvas id="rep-hdfs-trend-canvas"></canvas></div>');
+
+    var impRows = (d.impala || new Array()).map(function(r) {
+        return '<tr style="border-bottom:1px solid #18181b;"><td style="padding:4px;">' + r.date + '</td><td style="text-align:right;color:#22d3ee;">' + r.queries + '</td><td style="text-align:right;color:#a1a1aa;">' + r.duration + ' ms</td></tr>';
+    }).join("") || '<tr><td colspan="3" style="padding:6px;color:#71717a;">Sin actividad Impala en el periodo</td></tr>';
+
+    var p4 = repBox("4. Actividad de Consultas Impala", "Diario",
+        '<table style="width:100%;border-collapse:collapse;font-size:0.75rem;"><thead><tr style="color:#a1a1aa;border-bottom:1px solid #27272a;"><th style="text-align:left;padding:4px;">Fecha</th><th style="text-align:right;padding:4px;">Queries / día</th><th style="text-align:right;padding:4px;">Duración</th></tr></thead><tbody>' + impRows + '</tbody></table>');
+
+    var yRows = (d.yarn || new Array()).map(function(r) {
+        return '<tr style="border-bottom:1px solid #18181b;"><td style="padding:4px;">' + r.date + '</td><td style="text-align:right;color:#38bdf8;">' + r.apps + '</td><td style="text-align:right;color:#a1a1aa;">' + r.duration + ' s</td></tr>';
+    }).join("") || '<tr><td colspan="3" style="padding:6px;color:#71717a;">Sin aplicaciones YARN en el periodo</td></tr>';
+
+    var p5 = repBox("5. Actividad YARN (Aplicaciones)", "Diario",
+        '<table style="width:100%;border-collapse:collapse;font-size:0.75rem;"><thead><tr style="color:#a1a1aa;border-bottom:1px solid #27272a;"><th style="text-align:left;padding:4px;">Fecha</th><th style="text-align:right;padding:4px;">Apps Ingeridas</th><th style="text-align:right;padding:4px;">Duración Total</th></tr></thead><tbody>' + yRows + '</tbody></table>');
+
+    var hbRows = (d.hbase_tables || new Array()).slice(0, 15).map(function(t) {
+        return '<tr style="border-bottom:1px solid #18181b;"><td style="padding:4px;color:#f4f4f5;">' + t.table + '</td><td style="padding:4px;color:#a1a1aa;">' + t.namespace + '</td><td style="text-align:right;color:#fbbf24;">' + t.mb + ' MB</td><td style="text-align:right;color:#34d399;">' + t.gets_day + '</td></tr>';
+    }).join("") || '<tr><td colspan="4" style="padding:6px;color:#71717a;">Sin tablas HBase registradas</td></tr>';
+
+    var p6 = repBox("6. Tablas HBase & Glosario", (d.hbase_tables || new Array()).length + " tablas",
+        '<table style="width:100%;border-collapse:collapse;font-size:0.75rem;margin-bottom:0.7rem;"><thead><tr style="color:#a1a1aa;border-bottom:1px solid #27272a;"><th style="text-align:left;padding:4px;">Tabla</th><th style="text-align:left;padding:4px;">Namespace</th><th style="text-align:right;padding:4px;">Tamaño (MB)</th><th style="text-align:right;padding:4px;">Gets/día</th></tr></thead><tbody>' + hbRows + '</tbody></table>' +
+        '<div style="font-size:0.7rem;color:#71717a;border-top:1px solid #18181b;padding-top:6px;"><strong>Glosario:</strong> Lógico = sin replicación • Raw = con factor de replicación HDFS (~3x) • counter_delta = incremento diario.</div>');
+
+    return p2 + p3 + p4 + p5 + p6;
+}
+
+function initReportScrollAndCharts(dp, d) {
+    // 1. Progress bar sticky al hacer scroll
+    var scrollTarget = dp.parentElement || dp;
+    function updateBar() {
+        var bar = document.getElementById("rep-scroll-bar");
+        if (!bar) return;
+        var maxScroll = scrollTarget.scrollHeight - scrollTarget.clientHeight;
+        var pct = maxScroll > 0 ? Math.min(100, Math.max(12, (scrollTarget.scrollTop / maxScroll) * 100)) : 100;
+        bar.style.width = pct + "%";
+    }
+    scrollTarget.addEventListener("scroll", updateBar);
+    updateBar();
+
+    // 2. Animacion GSAP en cascada para los 6 paneles
+    if (typeof gsap !== "undefined") {
+        gsap.fromTo(dp.querySelectorAll(".rep-panel-card"),
+            { opacity: 0, y: 14 },
+            { opacity: 1, y: 0, duration: 0.32, stagger: 0.06, ease: "power2.out" }
+        );
+    }
+
+    // 3. Grafica historica HDFS
+    var cv = document.getElementById("rep-hdfs-trend-canvas");
+    var tr = d.hdfs_trend || {};
+    if (cv && tr.dates && tr.dates.length > 0 && typeof Chart !== "undefined") {
+        var ds = (tr.series || new Array()).map(function(s, i) {
+            var c = NODE_PALETTE.at(i % NODE_PALETTE.length);
+            return { label: s.user, data: s.values, borderColor: c, backgroundColor: c + "22", borderWidth: 2, pointRadius: 2, tension: 0.3, fill: false };
+        });
+        new Chart(cv.getContext("2d"), {
+            type: "line",
+            data: { labels: tr.dates, datasets: ds },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: "bottom", labels: { color: "#e4e4e7", boxWidth: 10, font: { size: 10 } } } }, scales: { x: { ticks: { color: "#71717a", font: { size: 9 } }, grid: { color: "#18181b" } }, y: { beginAtZero: true, ticks: { color: "#a1a1aa", font: { size: 9 } }, grid: { color: "#27272a" } } } }
+        });
+    }
+}
+
+
+
+
+function exportReportDocx() {
+    var d = (_lastReportData && _lastReportData.days) ? _lastReportData.days : 7;
+    window.location.href = "/api/general-report/docx?days=" + encodeURIComponent(d);
+}
+function exportReportCsv() { return exportReportDocx(); }
+
+
+
+/* === MENÚ ESTILO AWS + POPUP DETALLE USUARIO (GSAP) === */
+var isAwsMenuOpen = false;
+
+function toggleAwsUserMenu(e) {
+    if (e) e.stopPropagation();
+    isAwsMenuOpen ? closeAwsUserMenu() : openAwsUserMenu();
+}
+
+function openAwsUserMenu() {
+    var menu = document.getElementById("cm-aws-user-menu");
+    var caret = document.getElementById("aws-user-caret");
+    if (!menu || isAwsMenuOpen) return;
+    if (typeof closeMainActionsMenu === "function") closeMainActionsMenu();
+    isAwsMenuOpen = true;
+    menu.style.display = "block";
+    gsap.killTweensOf(menu);
+    gsap.fromTo(menu, { opacity: 0, scaleY: 0.8, y: -6 }, { opacity: 1, scaleY: 1, y: 0, duration: 0.24, ease: "back.out(1.6)" });
+    if (caret) gsap.to(caret, { rotation: 180, duration: 0.2 });
+}
+
+function closeAwsUserMenu() {
+    var menu = document.getElementById("cm-aws-user-menu");
+    var caret = document.getElementById("aws-user-caret");
+    if (!menu || !isAwsMenuOpen) return;
+    isAwsMenuOpen = false;
+    gsap.killTweensOf(menu);
+    gsap.to(menu, { opacity: 0, scaleY: 0.85, y: -5, duration: 0.16, onComplete: function() { menu.style.display = "none"; } });
+    if (caret) gsap.to(caret, { rotation: 0, duration: 0.18 });
+}
+
+document.addEventListener("click", function(e) {
+    if (isAwsMenuOpen && !e.target.closest("#cm-aws-user-dropdown")) closeAwsUserMenu();
+});
+
+async function openUserDetailPopup() {
+    closeUserDetailPopup(true);
+    var ov = document.createElement("div");
+    ov.id = "user-detail-overlay";
+    ov.className = "glass-cinema-overlay";
+    ov.onclick = function(e) { if (e.target === ov) closeUserDetailPopup(false); };
+    ov.innerHTML = '<div id="user-detail-modal" class="glass-cinema-modal" style="max-width:480px;padding:1.4rem;">' +
+        '<div class="glass-cinema-header"><span class="glass-cinema-title">👤 Detalle de Usuario Activo</span>' +
+        '<button type="button" class="glass-close-btn" onclick="closeUserDetailPopup(false)">✕</button></div>' +
+        '<div id="user-detail-body" style="color:#a1a1aa;font-size:0.85rem;padding:0.5rem 0;">Consultando sesión...</div></div>';
+    document.body.appendChild(ov);
+
+    var md = document.getElementById("user-detail-modal");
+    gsap.fromTo(ov, { opacity: 0 }, { opacity: 1, duration: 0.2 });
+    gsap.fromTo(md, { scale: 0.86, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.3, ease: "power3.out" });
+
+    try {
+        var r = await fetch("/api/user-session");
+        var d = await r.json();
+        var body = document.getElementById("user-detail-body");
+        if (!body) return;
+        var lbl = document.getElementById("aws-user-label");
+        if (lbl && d.username) lbl.textContent = d.username;
+
+        body.innerHTML = '<div style="display:flex;flex-direction:column;gap:0.65rem;">' +
+            '<div style="background:#09090b;border:1px solid #27272a;border-radius:10px;padding:0.75rem;">' +
+            '<div style="font-size:0.7rem;color:#71717a;text-transform:uppercase;">Usuario Autenticado</div>' +
+            '<div style="font-size:1.05rem;font-weight:800;color:#22d3ee;margin-top:2px;">' + (d.username || "Admin") + '</div></div>' +
+            '<div style="background:#09090b;border:1px solid #27272a;border-radius:10px;padding:0.75rem;">' +
+            '<div style="font-size:0.7rem;color:#71717a;text-transform:uppercase;">Clúster Administrado</div>' +
+            '<div style="font-size:0.92rem;font-weight:700;color:#f4f4f5;margin-top:2px;">' + (d.cluster || "Quintana Roo") + '</div></div>' +
+            '<div style="background:#09090b;border:1px solid #27272a;border-radius:10px;padding:0.75rem;">' +
+            '<div style="font-size:0.7rem;color:#71717a;text-transform:uppercase;">Endpoint Cloudera Manager</div>' +
+            '<div style="font-size:0.85rem;font-family:monospace;color:#34d399;margin-top:2px;">' + (d.cm_url || "") + '</div></div>' +
+            '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:0.5rem;">' +
+            '<button type="button" class="knox-tab-btn" onclick="closeUserDetailPopup(false)">Cerrar</button>' +
+            '' +
+            '</div></div>';
+    } catch (e) {
+        var bErr = document.getElementById("user-detail-body");
+        if (bErr) bErr.textContent = "Error obteniendo detalles de sesión.";
+    }
+}
+
+function closeUserDetailPopup(imm) {
+    var ov = document.getElementById("user-detail-overlay"), md = document.getElementById("user-detail-modal");
+    if (!ov) return;
+    function del() { if (ov && ov.parentNode) ov.parentNode.removeChild(ov); }
+    if (imm || !md) { del(); }
+    else {
+        gsap.to(md, { scale: 0.85, opacity: 0, duration: 0.2, ease: "power2.in" });
+        gsap.to(ov, { opacity: 0, duration: 0.2, onComplete: del });
+    }
+}
+
+document.addEventListener("keydown", function(e) {
+    if (e.key === "Escape") {
+        if (isAwsMenuOpen) closeAwsUserMenu();
+        if (document.getElementById("user-detail-overlay")) closeUserDetailPopup(false);
+    }
+});
+
+
+/* === MENU DESPLEGABLE ACERCA DE + MONITOR DE LOGS Y METADATOS === */
+var isAboutMenuOpen = false;
+
+function toggleAboutMenu(e) {
+    if (e) e.stopPropagation();
+    isAboutMenuOpen ? closeAboutMenu() : openAboutMenu();
+}
+
+function openAboutMenu() {
+    var menu = document.getElementById("cm-about-menu");
+    var caret = document.getElementById("cm-about-caret");
+    if (!menu || isAboutMenuOpen) return;
+    if (typeof closeMainActionsMenu === "function") closeMainActionsMenu();
+    if (typeof closeAwsUserMenu === "function") closeAwsUserMenu();
+    isAboutMenuOpen = true;
+    menu.style.display = "block";
+    gsap.killTweensOf(menu);
+    gsap.fromTo(menu, { opacity: 0, scaleY: 0.78, y: -8 }, { opacity: 1, scaleY: 1, y: 0, duration: 0.26, ease: "back.out(1.7)" });
+    if (caret) gsap.to(caret, { rotation: 180, duration: 0.22 });
+}
+
+function closeAboutMenu() {
+    var menu = document.getElementById("cm-about-menu");
+    var caret = document.getElementById("cm-about-caret");
+    if (!menu || !isAboutMenuOpen) return;
+    isAboutMenuOpen = false;
+    gsap.killTweensOf(menu);
+    gsap.to(menu, { opacity: 0, scaleY: 0.82, y: -6, duration: 0.16, onComplete: function() { menu.style.display = "none"; } });
+    if (caret) gsap.to(caret, { rotation: 0, duration: 0.18 });
+}
+
+document.addEventListener("click", function(e) {
+    if (isAboutMenuOpen && !e.target.closest("#cm-about-dropdown")) closeAboutMenu();
+});
+
+var appStorageTimer = null;
+var isStorageAutoOn = false;
+
+function stopAppStorageMonitor() {
+    isStorageAutoOn = false;
+    if (appStorageTimer) {
+        clearInterval(appStorageTimer);
+        appStorageTimer = null;
+    }
+}
+
+function toggleAppStorageAuto(checked) {
+    isStorageAutoOn = !!checked;
+    if (appStorageTimer) {
+        clearInterval(appStorageTimer);
+        appStorageTimer = null;
+    }
+    var badge = document.getElementById("storage-auto-badge");
+    if (isStorageAutoOn) {
+        if (badge) { badge.textContent = "● 30s"; badge.style.color = "#34d399"; }
+        appStorageTimer = setInterval(async function() {
+            if (!isStorageAutoOn || !document.getElementById("mac-storage-list")) {
+                stopAppStorageMonitor();
+                return;
+            }
+            try {
+                var r = await fetch("/api/app-storage");
+                var d = await r.json();
+                var dp = document.getElementById("detail-panel");
+                if (d.ok && dp && document.getElementById("mac-storage-list")) {
+                    renderMacStoragePanel(dp, d, true);
+                }
+            } catch (e) {}
+        }, 30000);
+    } else {
+        if (badge) { badge.textContent = "Manual"; badge.style.color = "#71717a"; }
+    }
+}
+
+async function inspectAppStorage() {
+    if (typeof window.openWorkspaceCurtain === "function") window.openWorkspaceCurtain();
+    if (typeof stopServiceMetrics === "function") stopServiceMetrics();
+    if (typeof stopRoleMonitor === "function") stopRoleMonitor();
+    if (typeof stopCertMonitor === "function") stopCertMonitor();
+    stopAppStorageMonitor();
+
+    var dp = document.getElementById("detail-panel");
+    if (!dp) return;
+    dp.innerHTML = "<div style='padding:2rem;text-align:center;color:#22d3ee;'>Escaneando carpetas y metadatos...</div>";
+
+    try {
+        var res = await fetch("/api/app-storage");
+        var d = await res.json();
+        renderMacStoragePanel(dp, d, false);
+    } catch (e) {
+        dp.innerHTML = "<div style='color:#fb7185;padding:1rem;'>Error: " + e.message + "</div>";
+    }
+}
+
+function renderMacStoragePanel(dp, d, skipAnim) {
+    var items = d.items || new Array();
+    var maxBytes = items.reduce(function(acc, it) { return Math.max(acc, it.total_bytes || 0); }, 1);
+    var chkAttr = isStorageAutoOn ? "checked" : "";
+    var badgeTxt = isStorageAutoOn ? "● 30s" : "Manual";
+    var badgeClr = isStorageAutoOn ? "#34d399" : "#71717a";
+
+    // Capturar porcentajes actuales antes de repintar para animar la bajada en tiempo real
+    var prevPcts = {};
+    dp.querySelectorAll(".mac-storage-bar").forEach(function(b) {
+        var id = b.getAttribute("data-id");
+        if (id) prevPcts[id] = b.style.width || "0%";
+    });
+
+    var header = "<div style='display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:1rem;padding-bottom:0.75rem;border-bottom:1px solid #27272a;'>" +
+        "<div><strong style='color:#f4f4f5;font-size:0.95rem;'>Monitor de Logs y Metadatos</strong>" +
+        "<div style='font-size:0.72rem;color:#a1a1aa;margin-top:2px;'>Basura detectada: <strong style='color:#22d3ee;'>" + (d.total_junk_hr || "0 B") + "</strong></div></div>" +
+        "<div style='display:flex;align-items:center;gap:10px;'>" +
+        "<label style='display:inline-flex;align-items:center;gap:6px;background:#09090b;border:1px solid #27272a;padding:4px 9px;border-radius:8px;cursor:pointer;font-size:0.72rem;color:#a1a1aa;' title='Activar refresco automático cada 30 segundos'>" +
+        "<span id='storage-auto-badge' style='font-weight:700;color:" + badgeClr + ";'>" + badgeTxt + "</span>" +
+        "<input type='checkbox' " + chkAttr + " onchange='toggleAppStorageAuto(this.checked)' style='accent-color:#06b6d4;cursor:pointer;margin:0;'>" +
+        "</label>" +
+        "<button type='button' class='knox-tab-btn' style='border-color:#fb7185!important;color:#fb7185!important;' onclick=\"triggerCleanStorage('all')\">🧹 Limpiar Todo</button>" +
+        "</div></div>";
+
+    var rowsHtml = items.map(function(it) {
+        var barPct = Math.max(4, Math.round(((it.total_bytes || 0) / maxBytes) * 100));
+        var targetW = barPct + "%";
+        var startW = prevPcts[it.id] || targetW;
+
+        var junkTag = it.can_clean
+            ? "<span style='font-size:0.68rem;color:#fbbf24;background:rgba(251,191,36,0.12);border:1px solid rgba(251,191,36,0.3);padding:1px 6px;border-radius:5px;margin-left:8px;'>basura: " + it.junk_hr + "</span>"
+            : "<span style='font-size:0.68rem;color:#34d399;margin-left:8px;'>limpio</span>";
+
+        var cleanBtn = it.can_clean
+            ? "<button type='button' class='knox-tab-btn' style='padding:4px 10px!important;font-size:0.72rem!important;border-color:#22d3ee!important;color:#22d3ee!important;' onclick=\"triggerCleanStorage('" + it.id + "')\">Limpiar</button>"
+            : "<span style='font-size:0.72rem;color:#52525b;padding:4px 10px;'>OK</span>";
+
+        return "<div class='mac-storage-row' data-row-id='" + it.id + "' style='background:#09090b;border:1px solid #27272a;border-radius:11px;padding:0.75rem 0.95rem;margin-bottom:0.65rem;display:flex;align-items:center;justify-content:space-between;gap:12px;'>" +
+            "<div style='flex:1;min-width:0;'>" +
+            "<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;'>" +
+            "<div style='display:flex;align-items:center;gap:8px;'><span>📁</span><strong style='font-family:monospace;font-size:0.84rem;color:#f4f4f5;'>" + it.label + "</strong>" + junkTag + "</div>" +
+            "<span class='mac-storage-size' style='font-family:monospace;font-size:0.82rem;font-weight:700;color:#22d3ee;'>" + it.total_hr + "</span></div>" +
+            "<div style='height:5px;width:100%;background:#18181b;border-radius:4px;overflow:hidden;'>" +
+            "<div class='mac-storage-bar' data-id='" + it.id + "' data-target-w='" + targetW + "' style='height:100%;width:" + startW + ";background:linear-gradient(90deg,#06b6d4,#a855f7);border-radius:4px;'></div></div></div>" +
+            "<div style='flex-shrink:0;'>" + cleanBtn + "</div></div>";
+    }).join("");
+
+    dp.innerHTML = header + "<div id='mac-storage-list'>" + rowsHtml + "</div>" + "<div style='margin-top:0.85rem;padding-top:0.75rem;border-top:1px solid #27272a;display:flex;justify-content:space-between;align-items:center;'><span style='font-size:0.72rem;color:#71717a;'>Motor de rastreo SQLite activo</span><button type='button' class='knox-tab-btn' style='border-color:rgba(34,211,238,0.45)!important;color:#22d3ee!important;' onclick='openRulesPopup()'>⚙ Configurar Archivos / Extensiones Rastreadas</button></div>";
+
+    if (typeof gsap !== "undefined") {
+        if (!skipAnim) {
+            gsap.fromTo(dp.querySelectorAll(".mac-storage-row"), { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.25, stagger: 0.04, ease: "power2.out" });
+        }
+        // Animar cada barra desde su ancho anterior hasta el nuevo ancho real
+        dp.querySelectorAll(".mac-storage-bar").forEach(function(bar) {
+            var fromW = bar.style.width;
+            var toW = bar.getAttribute("data-target-w");
+            if (fromW !== toW) {
+                gsap.fromTo(bar, { width: fromW }, { width: toW, duration: 0.65, ease: "power3.out" });
+                var row = bar.closest(".mac-storage-row");
+                if (row) {
+                    gsap.fromTo(row, { borderColor: "#34d399" }, { borderColor: "#27272a", duration: 0.9, ease: "power2.out" });
+                }
+            } else if (!skipAnim) {
+                gsap.fromTo(bar, { width: "0%" }, { width: toW, duration: 0.55, ease: "power2.out" });
+            }
+        });
+    }
+}
+
+async function triggerCleanStorage(targetId) {
+    try {
+        var res = await fetch("/api/app-storage/clean", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ target: targetId })
+        });
+        var d = await res.json();
+        var dp = document.getElementById("detail-panel");
+        if (d.ok && d.scan && dp) renderMacStoragePanel(dp, d.scan, true);
+    } catch (e) {
+        alert("Error limpiando: " + e.message);
+    }
+}
+
+
+/* === POPUP DE REGLAS SQLITE DE METADATOS === */
+var _protectedMap = {};
+
+async function openRulesPopup() {
+    closeRulesPopup(true);
+    var ov = document.createElement("div");
+    ov.id = "rules-popup-overlay";
+    ov.className = "glass-cinema-overlay";
+    ov.onclick = function(e) { if (e.target === ov) closeRulesPopup(false); };
+    ov.innerHTML = "<div id='rules-popup-modal' class='glass-cinema-modal' style='max-width:680px;max-height:86vh;overflow-y:auto;padding:1.4rem;'>" +
+        "<div class='glass-cinema-header'><span class='glass-cinema-title'>⚙ Reglas de Rastreo SQLite (Metadata Elegible)</span>" +
+        "<button type='button' class='glass-close-btn' onclick='closeRulesPopup(false)'>✕</button></div>" +
+        "<p style='font-size:0.78rem;color:#a1a1aa;margin-bottom:0.85rem;'>Si el escáner encuentra archivos que coincidan con estas reglas en SQLite, los marca como metadata elegible para borrar.</p>" +
+        "<div id='rules-warning-banner' style='display:none;background:rgba(244,63,94,0.14);border:1px solid #f43f5e;border-left:4px solid #f43f5e;border-radius:10px;padding:0.75rem;margin-bottom:0.85rem;color:#fecdd3;font-size:0.78rem;'></div>" +
+        "<div style='display:flex;gap:8px;flex-wrap:wrap;margin-bottom:1rem;background:#09090b;padding:0.75rem;border-radius:10px;border:1px solid #27272a;'>" +
+        "<input id='new-rule-pattern' type='text' placeholder='Ej. *.tmp, *.old, .DS_Store' oninput='checkProtectedExt(this.value)' style='flex:1;min-width:160px;background:#18181b;border:1px solid #27272a;color:#f4f4f5;padding:6px 10px;border-radius:8px;font-size:0.8rem;'>" +
+        "<select id='new-rule-type' style='background:#18181b;border:1px solid #27272a;color:#e4e4e7;padding:6px 8px;border-radius:8px;font-size:0.8rem;'><option value='extension'>Extensión</option><option value='folder'>Carpeta</option><option value='file'>Archivo</option></select>" +
+        "<input id='new-rule-desc' type='text' placeholder='Descripción breve' style='flex:1;min-width:140px;background:#18181b;border:1px solid #27272a;color:#f4f4f5;padding:6px 10px;border-radius:8px;font-size:0.8rem;'>" +
+        "<button type='button' class='knox-tab-btn' style='border-color:#34d399!important;color:#34d399!important;' onclick='saveNewCleanupRule()'>+ Agregar</button></div>" +
+        "<div id='rules-table-wrap' style='font-size:0.8rem;color:#a1a1aa;'>Cargando reglas desde SQLite...</div></div>";
+    document.body.appendChild(ov);
+
+    var md = document.getElementById("rules-popup-modal");
+    gsap.fromTo(ov, { opacity: 0 }, { opacity: 1, duration: 0.2 });
+    gsap.fromTo(md, { scale: 0.88, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.28, ease: "power3.out" });
+
+    var r = await fetch("/api/app-storage/rules");
+    var d = await r.json();
+    _protectedMap = d.protected || {};
+    renderRulesTable(d.rules || new Array());
+}
+
+function checkProtectedExt(val) {
+    var banner = document.getElementById("rules-warning-banner");
+    if (!banner) return;
+    var v = String(val || "").trim().toLowerCase();
+    var matchedExt = Object.keys(_protectedMap).find(function(ext) {
+        return v === ext || v === "*" + ext || v.endsWith(ext);
+    });
+    if (matchedExt) {
+        var info = _protectedMap[matchedExt];
+        banner.style.display = "block";
+        banner.innerHTML = "<strong style='color:#fb7185;'>⚠ ADVERTENCIA DE RIESGO (" + info.risk_level + ") — Extensión protegida " + matchedExt + ":</strong><br>" + info.consequence;
+    } else {
+        banner.style.display = "none";
+    }
+}
+
+
+function renderRulesTable(rules) {
+    var wrap = document.getElementById("rules-table-wrap");
+    if (!wrap) return;
+    var rows = rules.map(function(r) {
+        return "<tr style='border-bottom:1px solid #18181b;'>" +
+            "<td style='padding:6px;color:#71717a;font-family:monospace;'>#" + r.id + "</td>" +
+            "<td style='padding:6px;color:#22d3ee;font-family:monospace;font-weight:700;'>" + r.pattern + "</td>" +
+            "<td style='padding:6px;color:#a1a1aa;'>" + r.rule_type + "</td>" +
+            "<td style='padding:6px;color:#d4d4d8;'>" + (r.description || "") + "</td>" +
+            "<td style='padding:6px;text-align:right;'><button type='button' class='knox-tab-btn' style='padding:2px 8px!important;font-size:0.7rem!important;border-color:#fb7185!important;color:#fb7185!important;' onclick='removeCleanupRule(" + r.id + ")'>Quitar</button></td></tr>";
+    }).join("");
+    wrap.innerHTML = "<table style='width:100%;border-collapse:collapse;font-size:0.76rem;'>" +
+        "<thead><tr style='color:#a1a1aa;border-bottom:1px solid #27272a;'><th style='text-align:left;padding:6px;'>ID</th><th style='text-align:left;padding:6px;'>Patrón / Ext</th><th style='text-align:left;padding:6px;'>Tipo</th><th style='text-align:left;padding:6px;'>Descripción</th><th style='text-align:right;padding:6px;'>Acción</th></tr></thead>" +
+        "<tbody>" + rows + "</tbody></table>";
+}
+
+async function saveNewCleanupRule() {
+    var pat = document.getElementById("new-rule-pattern").value;
+    var rtype = document.getElementById("new-rule-type").value;
+    var desc = document.getElementById("new-rule-desc").value;
+    if (!pat) return;
+
+    var v = pat.trim().toLowerCase();
+    var isCrit = Object.keys(_protectedMap).some(function(ext) { return v === ext || v === "*" + ext || v.endsWith(ext); });
+    if (isCrit && !confirm("ATENCIÓN: Esta extensión está marcada en SQLite como crítica para la aplicación. ¿Seguro que deseas agregarla como borrable?")) {
+        return;
+    }
+
+    var res = await fetch("/api/app-storage/rules", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pattern: pat, rule_type: rtype, scope: "app/*", description: desc })
+    });
+    var d = await res.json();
+    if (d.ok) {
+        document.getElementById("new-rule-pattern").value = "";
+        document.getElementById("new-rule-desc").value = "";
+        checkProtectedExt("");
+        renderRulesTable(d.rules || new Array());
+        var sr = await fetch("/api/app-storage");
+        var sd = await sr.json();
+        var dp = document.getElementById("detail-panel");
+        if (sd.ok && dp && document.getElementById("mac-storage-list")) renderMacStoragePanel(dp, sd, true);
+    }
+}
+
+async function removeCleanupRule(id) {
+    var res = await fetch("/api/app-storage/rules?id=" + id, { method: "DELETE" });
+    var d = await res.json();
+    if (d.ok) {
+        renderRulesTable(d.rules || new Array());
+        var sr = await fetch("/api/app-storage");
+        var sd = await sr.json();
+        var dp = document.getElementById("detail-panel");
+        if (sd.ok && dp && document.getElementById("mac-storage-list")) renderMacStoragePanel(dp, sd, true);
+    }
+}
+
+function closeRulesPopup(imm) {
+    var ov = document.getElementById("rules-popup-overlay"), md = document.getElementById("rules-popup-modal");
+    if (!ov) return;
+    function del() { if (ov && ov.parentNode) ov.parentNode.removeChild(ov); }
+    if (imm || !md) del();
+    else { gsap.to(md, { scale: 0.85, opacity: 0, duration: 0.18 }); gsap.to(ov, { opacity: 0, duration: 0.18, onComplete: del }); }
+}

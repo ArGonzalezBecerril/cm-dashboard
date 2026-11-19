@@ -28,5 +28,7 @@ def create_app():
     app.register_blueprint(dashboard_bp)
 
     logging.info("Cloudera API Monitor inicializado correctamente")
+    from app.services.housekeeper import startup_audit
+    startup_audit()
     return app
 

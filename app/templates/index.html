@@ -2,14 +2,52 @@
 {% block content %}
 <div class="panel" style="padding: 0.75rem 1.2rem; margin-bottom: 1.25rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
     <div style="display: flex; align-items: center; gap: 10px;">
-        <button type="button" onclick="inspectCertificates()" style="width: auto; background: rgba(34, 211, 238, 0.12); color: #22d3ee; border: 1px solid rgba(34, 211, 238, 0.35); padding: 0.5rem 1rem; display: inline-flex; align-items: center; gap: 7px;">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path><polyline points="9 12 11 14 15 10"></polyline></svg>
-            <span>Certificados TLS</span>
-        </button>
-        <button type="button" onclick="inspectAbout()" style="width: auto; background: rgba(255, 255, 255, 0.04); color: #d4d4d8; border: 1px solid #27272a; padding: 0.5rem 1rem; display: inline-flex; align-items: center; gap: 7px;">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
-            <span>Acerca de</span>
-        </button>
+        <div class="cm-dropdown" id="cm-main-actions-dropdown">
+            <button type="button" id="btn-main-actions" class="cm-dropdown-trigger" onclick="toggleMainActionsMenu(event)">
+                <span>⚙ Acciones</span>
+                <span id="cm-dropdown-caret" style="display:inline-block;margin-left:6px;font-size:0.75rem;">▾</span>
+            </button>
+            <div id="cm-actions-menu" class="cm-dropdown-panel" style="display:none;">
+                <button type="button" class="cm-dropdown-item" onclick="closeMainActionsMenu(); inspectCertificates();">
+                    <span class="cm-item-icon">🛡️</span>
+                    <div class="cm-item-text">
+                        <strong>Estatus Certificados TLS</strong>
+                        <small>Auditoría de expiración y vigencia SSL</small>
+                    </div>
+                </button>
+                <div class="cm-dropdown-divider"></div>
+                <button type="button" class="cm-dropdown-item" onclick="closeMainActionsMenu(); inspectGeneralReport();">
+                    <span class="cm-item-icon">📊</span>
+                    <div class="cm-item-text">
+                        <strong>Reporte General Métricas Uso</strong>
+                        <small>Consolidado global de CPU, RAM y Disco</small>
+                    </div>
+                </button>
+            </div>
+        </div>
+        <div class="cm-dropdown" id="cm-about-dropdown" style="position:relative;display:inline-block;">
+            <button type="button" id="btn-about-menu" class="cm-dropdown-trigger" onclick="toggleAboutMenu(event)" style="border-color:rgba(161,161,170,0.35)!important;color:#e4e4e7!important;">
+                <span>ⓘ Acerca de</span>
+                <span id="cm-about-caret" style="display:inline-block;margin-left:6px;font-size:0.75rem;">▾</span>
+            </button>
+            <div id="cm-about-menu" class="cm-dropdown-panel" style="display:none;min-width:295px;">
+                <button type="button" class="cm-dropdown-item" onclick="closeAboutMenu(); inspectAbout();">
+                    <span class="cm-item-icon">ℹ️</span>
+                    <div class="cm-item-text">
+                        <strong>Acerca de</strong>
+                        <small>Arquitectura y versión del monitor</small>
+                    </div>
+                </button>
+                <div class="cm-dropdown-divider"></div>
+                <button type="button" class="cm-dropdown-item" onclick="closeAboutMenu(); inspectAppStorage();">
+                    <span class="cm-item-icon">🧹</span>
+                    <div class="cm-item-text">
+                        <strong>Monitor de Logs de Aplicación</strong>
+                        <small>Auditoría de metadatos, caché y limpieza</small>
+                    </div>
+                </button>
+            </div>
+        </div>
     </div>
     <span style="font-size: 0.74rem; color: #71717a; font-family: monospace;">Seguritech • Big Data Ops</span>
 </div>

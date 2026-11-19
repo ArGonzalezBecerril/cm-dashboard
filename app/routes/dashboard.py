@@ -432,3 +432,236 @@ def metrics_stop():
     from app.services.metrics_store import stop_all_collectors
     stop_all_collectors()
     return jsonify({"ok": True})
+
+@dashboard_bp.route("/api/general-report", methods=["GET"])
+@cm_login_required
+def general_usage_report():
+    from datetime import datetime, timedelta, timezone
+
+    days = max(1, min(int(request.args.get("days", 7)), 60))
+    client = get_authenticated_client()
+
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(days=days)
+    from_str = start.strftime("%Y-%m-%dT%H:%M:%SZ")
+    to_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    cluster_name = "Quintana Roo"
+    try:
+        cl_items = (client.get("/clusters").get("items") or list())
+        if len(cl_items):
+            c0 = next(iter(cl_items))
+            cluster_name = c0.get("displayName") or c0.get("name") or cluster_name
+    except Exception:
+        pass
+
+    def run_ts_first(queries_list, rollup="DAILY"):
+        for tsq in queries_list:
+            try:
+                raw = client.get(f"/timeseries?query={tsq}&from={from_str}&to={to_str}&desiredRollup={rollup}")
+                items = raw.get("items") or list()
+                if len(items):
+                    ts_arr = next(iter(items)).get("timeSeries") or list()
+                    if len(ts_arr):
+                        return ts_arr
+            except Exception as e:
+                logger.warning(f"[GeneralReport] Intento tsquery ({tsq}): {e}")
+        return list()
+
+    def extract_user_name(meta):
+        attrs = meta.get("attributes") or {}
+        u = attrs.get("userName") or attrs.get("user") or meta.get("entityName") or ""
+        if "/" in u:
+            u = u.rstrip("/").split("/")[-1]
+        if ":" in u:
+            u = u.split(":")[-1]
+        return u.strip() or "hdfs"
+
+    hdfs_bytes_ts = run_ts_first(("SELECT bytes_used WHERE category = HDFS_USER_ROOT_DIR", "SELECT total_bytes_used_across_hdfs_user_dirs WHERE serviceType = HDFS", "SELECT dfs_capacity_used WHERE serviceType = HDFS"))
+    hdfs_raw_ts = run_ts_first(("SELECT bytes_used_raw WHERE category = HDFS_USER_ROOT_DIR", "SELECT total_bytes_used_raw_across_hdfs_user_dirs WHERE serviceType = HDFS"))
+    hdfs_files_ts = run_ts_first(("SELECT num_files WHERE category = HDFS_USER_ROOT_DIR", "SELECT total_files_across_hdfs_user_dirs WHERE serviceType = HDFS"))
+
+    raw_by_user = {extract_user_name(ts.get("metadata") or {}): float((ts.get("data") or list())[-1].get("value", 0)) for ts in hdfs_raw_ts if len(ts.get("data") or list())}
+    files_by_user = {extract_user_name(ts.get("metadata") or {}): int(float((ts.get("data") or list())[-1].get("value", 0))) for ts in hdfs_files_ts if len(ts.get("data") or list())}
+
+    hdfs_users = list()
+    trend_dates_set = set()
+    trend_by_user = {}
+
+    for ts in hdfs_bytes_ts:
+        u = extract_user_name(ts.get("metadata") or {})
+        pts = ts.get("data") or list()
+        if not len(pts):
+            continue
+        last_bytes = float(pts[-1].get("value", 0))
+        r_bytes = raw_by_user.get(u, last_bytes * 3.0)
+        hdfs_users.append({"user": u, "bytes_logical": int(last_bytes), "gb_logical": round(last_bytes / (1024 ** 3), 4), "mb_logical": round(last_bytes / (1024 ** 2), 2), "bytes_raw": int(r_bytes), "gb_raw": round(r_bytes / (1024 ** 3), 4), "files": files_by_user.get(u, 0)})
+        for pt in pts:
+            d_str = str(pt.get("timestamp", ""))[:10]
+            if d_str:
+                trend_dates_set.add(d_str)
+                trend_by_user.setdefault(u, {})[d_str] = round(float(pt.get("value", 0)) * 3.0 / (1024 ** 3), 3)
+
+    hdfs_users.sort(key=lambda x: x["bytes_logical"], reverse=True)
+    total_logical_b = sum(x["bytes_logical"] for x in hdfs_users) or 1
+    total_raw_b = sum(x["bytes_raw"] for x in hdfs_users)
+    for x in hdfs_users:
+        x["pct"] = round((x["bytes_logical"] / total_logical_b) * 100.0, 2)
+
+    trend_dates = sorted(list(trend_dates_set))
+    top_users_trend = [{"user": u["user"], "values": [trend_by_user.get(u["user"], {}).get(d, 0) for d in trend_dates]} for u in hdfs_users[:6]]
+
+    impala_q_ts = run_ts_first(("SELECT queries_ingested_rate WHERE serviceType = IMPALA", "SELECT impala_queries_rate WHERE serviceType = IMPALA"))
+    impala_daily = {}
+    for ts in impala_q_ts:
+        for pt in (ts.get("data") or list()):
+            d_str = str(pt.get("timestamp", ""))[:10]
+            impala_daily.setdefault(d_str, {"date": d_str, "queries": 0, "duration": 0})["queries"] += int(round(float(pt.get("value", 0)) * 86400))
+    impala_rows = [impala_daily[d] for d in sorted(impala_daily.keys())]
+    total_impala_queries = sum(r["queries"] for r in impala_rows)
+
+    yarn_apps_ts = run_ts_first(("SELECT apps_ingested_rate WHERE serviceType = YARN", "SELECT apps_submitted_rate WHERE serviceType = YARN", "SELECT apps_completed_rate WHERE serviceType = YARN"))
+    yarn_dur_ts = run_ts_first(("SELECT yarn_application_application_duration_rate WHERE serviceType = YARN", "SELECT allocated_memory_mb WHERE serviceType = YARN"))
+    yarn_daily = {}
+    for ts in yarn_apps_ts:
+        for pt in (ts.get("data") or list()):
+            d_str = str(pt.get("timestamp", ""))[:10]
+            val_day = float(pt.get("value", 0))
+            if val_day != 0 and not (val_day >= 1):
+                val_day = val_day * 86400
+            yarn_daily.setdefault(d_str, {"date": d_str, "apps": 0, "duration": 0})["apps"] += int(round(val_day))
+    for ts in yarn_dur_ts:
+        for pt in (ts.get("data") or list()):
+            d_str = str(pt.get("timestamp", ""))[:10]
+            yarn_daily.setdefault(d_str, {"date": d_str, "apps": 0, "duration": 0})["duration"] += int(round(float(pt.get("value", 0))))
+    yarn_rows = [yarn_daily[d] for d in sorted(yarn_daily.keys())]
+    total_yarn_apps = sum(r["apps"] for r in yarn_rows)
+
+    hbase_tbl_ts = run_ts_first(("SELECT raw_size WHERE category = HBASE_TABLE", "SELECT storefile_size WHERE category = HBASE_TABLE"))
+    hbase_get_ts = run_ts_first(("SELECT total_get_rate WHERE category = HBASE_TABLE", "SELECT get_request_rate WHERE category = HBASE_TABLE"))
+    gets_by_tbl = {}
+    for ts in hbase_get_ts:
+        attrs = (ts.get("metadata") or {}).get("attributes") or {}
+        tname = attrs.get("tableName") or (ts.get("metadata") or {}).get("entityName") or ""
+        pts = ts.get("data") or list()
+        if tname and len(pts):
+            gets_by_tbl[tname] = int(round(float(pts[-1].get("value", 0)) * 86400))
+
+    hbase_tables = list()
+    ns_totals = {}
+    for ts in hbase_tbl_ts:
+        attrs = (ts.get("metadata") or {}).get("attributes") or {}
+        tname = attrs.get("tableName") or (ts.get("metadata") or {}).get("entityName") or "tabla"
+        if ":" in tname:
+            parts_t = tname.split(":", 1)
+            ns = parts_t.pop(0)
+            tname = parts_t.pop(0)
+        else:
+            ns = attrs.get("namespace") or ("hbase" if tname.startswith("SYSTEM.") else "default")
+        pts = ts.get("data") or list()
+        if not len(pts):
+            continue
+        b_val = float(pts[-1].get("value", 0))
+        ns_totals[ns] = ns_totals.get(ns, 0.0) + b_val
+        hbase_tables.append({"table": tname, "namespace": ns, "bytes": int(b_val), "mb": round(b_val / (1024 ** 2), 3), "gets_day": gets_by_tbl.get(tname, 0)})
+    hbase_tables.sort(key=lambda x: x["bytes"], reverse=True)
+
+    top1 = next(iter(hdfs_users), {"user": "N/A", "gb_logical": 0, "gb_raw": 0, "pct": 0})
+    top2 = next(iter(hdfs_users[1:2]), {"user": "N/A", "gb_logical": 0, "pct": 0})
+    top_tbl = next(iter(hbase_tables), {}).get("table", "N/A")
+    findings = (
+        f"{top1['user']} es el principal consumidor de disco ({top1['gb_logical']} GB lógicos / {top1['gb_raw']} GB raw), representando {top1['pct']}% del total.",
+        f"{top2['user']} ocupa el segundo lugar ({top2['gb_logical']} GB lógicos, {top2['pct']}% del total).",
+        f"En los últimos {days} días se registraron {total_yarn_apps} aplicaciones YARN y {total_impala_queries} consultas Impala.",
+        f"HBase tiene {len(hbase_tables)} tablas monitoreadas; la mayor es {top_tbl}."
+    )
+    return jsonify({
+        "ok": True, "cluster": cluster_name, "days": days, "period": f"{start.strftime('%Y-%m-%d')} – {now.strftime('%Y-%m-%d')}",
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "kpis": {
+            "total_logical_gb": round(sum(x["bytes_logical"] for x in hdfs_users) / (1024 ** 3), 2),
+            "total_raw_gb": round(total_raw_b / (1024 ** 3), 2),
+            "top1_user": top1["user"], "top1_gb": round(top1["gb_logical"], 2), "top1_pct": top1["pct"],
+            "top2_user": top2["user"], "top2_gb": round(top2["gb_logical"], 2), "top2_pct": top2["pct"],
+            "yarn_apps": total_yarn_apps, "impala_queries": total_impala_queries
+        },
+        "findings": findings, "hdfs_users": hdfs_users, "hdfs_trend": {"dates": trend_dates, "series": top_users_trend},
+        "impala": impala_rows, "yarn": yarn_rows, "hbase_tables": hbase_tables,
+        "hbase_namespaces": [{"ns": f"hbase:{k}", "bytes": int(v), "mb": round(v / (1024 ** 2), 3)} for k, v in ns_totals.items()]
+    })
+
+@dashboard_bp.route("/api/general-report/docx", methods=["GET", "POST"])
+@cm_login_required
+def general_report_docx():
+    from flask import send_file
+    from app.services.report_docx import build_usage_report_docx
+
+    payload = request.get_json(silent=True) or {}
+    if not payload:
+        # Si viene por GET, generar el reporte al vuelo con el mismo endpoint
+        resp = general_usage_report()
+        payload = resp.get_json() if hasattr(resp, "get_json") else {}
+
+    buf = build_usage_report_docx(payload)
+    days = payload.get("days", 7)
+    return send_file(
+        buf,
+        as_attachment=True,
+        download_name=f"Reporte_Uso_Cluster_{days}d.docx",
+        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+@dashboard_bp.route("/api/user-session", methods=["GET"])
+@cm_login_required
+def user_session_info():
+    from flask import session
+    from app.services.metrics_store import get_cached_user, set_cached_user
+
+    cached = get_cached_user()
+    if cached:
+        return jsonify(cached)
+
+    client = get_authenticated_client()
+    cluster_name = "Quintana Roo"
+    try:
+        cl_items = (client.get("/clusters").get("items") or list())
+        if len(cl_items):
+            c0 = next(iter(cl_items))
+            cluster_name = c0.get("displayName") or c0.get("name") or cluster_name
+    except Exception:
+        pass
+
+    uname = session.get("cm_user") or session.get("username") or getattr(client, "username", "admin")
+    cm_url = getattr(client, "base_url", "https://10.180.220.177:7183")
+    saved = set_cached_user(uname, cm_url, cluster_name)
+    return jsonify(saved)
+
+
+@dashboard_bp.route("/api/app-storage", methods=["GET"])
+@cm_login_required
+def app_storage_scan():
+    from app.services.housekeeper import scan_storage
+    return jsonify(scan_storage())
+
+
+@dashboard_bp.route("/api/app-storage/clean", methods=["POST"])
+@cm_login_required
+def app_storage_clean():
+    from app.services.housekeeper import clean_target
+    payload = request.get_json(silent=True) or {}
+    target_id = payload.get("target", "all")
+    return jsonify(clean_target(target_id))
+
+
+@dashboard_bp.route("/api/app-storage/rules", methods=["GET", "POST", "DELETE"])
+@cm_login_required
+def app_storage_rules():
+    from app.services.housekeeper import get_rules_and_protected, add_cleanup_rule, delete_cleanup_rule
+    if request.method == "GET":
+        return jsonify(get_rules_and_protected())
+    if request.method == "POST":
+        p = request.get_json(silent=True) or {}
+        return jsonify(add_cleanup_rule(p.get("pattern", ""), p.get("rule_type", "extension"), p.get("scope", "app/*"), p.get("description", "")))
+    if request.method == "DELETE":
+        rid = request.args.get("id", 0)
+        return jsonify(delete_cleanup_rule(rid))

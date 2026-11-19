@@ -39,6 +39,7 @@ def login():
             ok, err_msg = validate_cloudera_login(host, port, protocol, api_ver, user, password)
             if ok:
                 # Prevención de Session Fixation: limpiar antes de asignar
+                clear_all_metrics()
                 session.clear()
                 session.permanent = True
                 session["host"] = host
@@ -67,6 +68,7 @@ def logout():
         "last_api_ver": session.get("api_ver"),
         "last_user": session.get("user"),
     }
+    clear_all_metrics()
     session.clear()
     # Recordar host/usuario para comodidad al volver a entrar (sin password)
     for k, v in last_conn.items():

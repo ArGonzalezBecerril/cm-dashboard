@@ -15,7 +15,30 @@
                 <div class="pulse"></div>
                 <div>CLOUDERA <span>API MONITOR</span></div>
             </div>
-            <span class="badge-ver">v1.2 • Split Workspace</span>
+            <div class="cm-dropdown" id="cm-aws-user-dropdown" style="position:relative;display:inline-block;">
+            <button type="button" id="btn-aws-user" class="cm-dropdown-trigger" onclick="toggleAwsUserMenu(event)" style="border-color:rgba(161,161,170,0.35)!important;color:#f4f4f5!important;">
+                <span style="color:#22d3ee;">●</span>
+                <span id="aws-user-label">{{ session.get('cm_user') or session.get('username') or 'Admin CM' }}</span>
+                <span id="aws-user-caret" style="display:inline-block;margin-left:4px;font-size:0.72rem;color:#a1a1aa;">▼</span>
+            </button>
+            <div id="cm-aws-user-menu" class="cm-dropdown-panel" style="display:none;left:auto;right:0;min-width:250px;transform-origin:top right;">
+                <button type="button" class="cm-dropdown-item" onclick="closeAwsUserMenu(); openUserDetailPopup();">
+                    <span class="cm-item-icon">👤</span>
+                    <div class="cm-item-text">
+                        <strong>Detalle Usuario</strong>
+                        <small>Sesión activa y conexión Cloudera</small>
+                    </div>
+                </button>
+                <div class="cm-dropdown-divider"></div>
+                <a href="/logout" class="cm-dropdown-item" style="text-decoration:none;">
+                    <span class="cm-item-icon" style="color:#fb7185;border-color:rgba(244,63,94,0.3);">⏻</span>
+                    <div class="cm-item-text">
+                        <strong style="color:#fb7185;">Cerrar Sessión</strong>
+                        <small>Finalizar sesión y limpiar caché</small>
+                    </div>
+                </a>
+            </div>
+        </div>
         </div>
     </nav>
     <main>

@@ -57,6 +57,7 @@ def clear_all_metrics():
         conn = _get_conn()
         try:
             conn.execute("DELETE FROM metrics_buffer;")
+            conn.execute("DELETE FROM user_session_cache;")
             conn.commit()
         finally:
             conn.close()
@@ -241,3 +242,51 @@ def read_series_from_db(service_name, limit_per_node=25):
         metrics_out[m_key] = series_list
 
     return metrics_out, len(alive_nodes)
+
+
+
+def _ensure_user_table():
+    with _db_lock:
+        conn = _get_conn()
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_session_cache (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    username TEXT,
+                    cm_url TEXT,
+                    cluster TEXT,
+                    cached_at TEXT
+                )
+            """)
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def get_cached_user():
+    _ensure_user_table()
+    with _db_lock:
+        conn = _get_conn()
+        try:
+            row = conn.execute("SELECT username, cm_url, cluster, cached_at FROM user_session_cache WHERE id = 1").fetchone()
+            if row:
+                it = iter(row); return {"ok": True, "username": next(it), "cm_url": next(it), "cluster": next(it), "cached_at": next(it), "source": "sqlite_cache"}
+        finally:
+            conn.close()
+    return None
+
+
+def set_cached_user(username, cm_url, cluster):
+    _ensure_user_table()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with _db_lock:
+        conn = _get_conn()
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO user_session_cache (id, username, cm_url, cluster, cached_at) VALUES (1, ?, ?, ?, ?)",
+                (username, cm_url, cluster, now_str),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    return {"ok": True, "username": username, "cm_url": cm_url, "cluster": cluster, "cached_at": now_str, "source": "live_api"}
