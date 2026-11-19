@@ -45,6 +45,7 @@ def init_db():
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_srv_ts ON metrics_buffer(service_name, ts_epoch);")
+            conn.execute("CREATE TABLE IF NOT EXISTS user_session_cache (id INTEGER PRIMARY KEY CHECK (id = 1), username TEXT, cm_url TEXT, cluster TEXT, cached_at TEXT)")
             conn.commit()
         finally:
             conn.close()

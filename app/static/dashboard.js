@@ -649,6 +649,8 @@ function openMainActionsMenu() {
     var menu = document.getElementById("cm-actions-menu");
     var caret = document.getElementById("cm-dropdown-caret");
     if (!menu || isMainMenuOpen) return;
+    if (typeof closeAboutMenu === "function") closeAboutMenu();
+    if (typeof closeAwsUserMenu === "function") closeAwsUserMenu();
     isMainMenuOpen = true;
     menu.style.display = "block";
 
@@ -1262,3 +1264,189 @@ function closeRulesPopup(imm) {
     if (imm || !md) del();
     else { gsap.to(md, { scale: 0.85, opacity: 0, duration: 0.18 }); gsap.to(ov, { opacity: 0, duration: 0.18, onComplete: del }); }
 }
+
+
+/* === MODULO NODO: HARDWARE EN VIVO + ROLES FILTRABLES === */
+var _nodeHwTimer = null;
+var _renderedNodeKey = "";
+
+function _ensureNodeHwTooltip() {
+    var tip = document.getElementById("node-hw-tooltip");
+    if (tip) return tip;
+    tip = document.createElement("div");
+    tip.id = "node-hw-tooltip";
+    tip.style.cssText = "position:fixed;z-index:10060;pointer-events:none;display:none;background:rgba(9,9,11,0.94);border:1px solid #22d3ee;color:#f4f4f5;padding:7px 11px;border-radius:9px;font-size:11px;box-shadow:0 10px 24px rgba(0,0,0,0.75);max-width:290px;line-height:1.4;";
+    document.body.appendChild(tip);
+
+    document.addEventListener("mousemove", function(e) {
+        var row = e.target.closest ? e.target.closest(".node-hw-row") : null;
+        if (!row) { tip.style.display = "none"; return; }
+        tip.innerHTML = "<strong style='color:#22d3ee;'>" + row.getAttribute("data-tip-title") + " (" + row.getAttribute("data-tip-unit") + ")</strong><br><span style='color:#d4d4d8;'>" + row.getAttribute("data-tip-desc") + "</span>";
+        tip.style.left = (e.clientX + 14) + "px";
+        tip.style.top = (e.clientY - 14) + "px";
+        tip.style.display = "block";
+    });
+    return tip;
+}
+
+function _renderNodeHwRows(container, d) {
+    _ensureNodeHwTooltip();
+    var prevW = {};
+    container.querySelectorAll(".node-hw-bar").forEach(function(b) {
+        prevW[b.getAttribute("data-k")] = b.style.width || "0%";
+    });
+
+    var netTotal = (d.net_rx_mb || 0) + (d.net_tx_mb || 0);
+    var netPct = Math.min(100, Math.max(4, Math.round((netTotal / 100) * 100)));
+
+    var metrics = [
+        { k: "cpu", icon: "⚡", label: "CPU Usado", valTxt: d.cpu_pct + " %", pct: Math.min(100, Math.max(3, Math.round(d.cpu_pct))), unit: "% de vCPU", desc: "Porcentaje total de cómputo consumido en los núcleos virtuales." },
+        { k: "ram", icon: "🧠", label: "RAM Física", valTxt: d.ram_used_gb + " / " + d.ram_total_gb + " GB (" + d.ram_pct + "%)", pct: Math.min(100, Math.max(3, Math.round(d.ram_pct))), unit: "Gigabytes (GB)", desc: "Memoria RAM física ocupada vs capacidad total instalada." },
+        { k: "disk", icon: "💾", label: "Disco Local", valTxt: d.disk_used_gb + " / " + d.disk_cap_gb + " GB (" + d.disk_pct + "%)", pct: Math.min(100, Math.max(3, Math.round(d.disk_pct))), unit: "Gigabytes (GB)", desc: "Almacenamiento ocupado en los filesystems locales del nodo." },
+        { k: "net", icon: "🌐", label: "Tráfico Red I/O", valTxt: "↓ " + d.net_rx_mb + " MB/s • ↑ " + d.net_tx_mb + " MB/s", pct: netPct, unit: "MB/s", desc: "Tasa instantánea de recepción (↓ RX) y transmisión (↑ TX)." }
+    ];
+
+    container.innerHTML = metrics.map(function(m) {
+        var targetW = m.pct + "%", startW = prevW[m.k] || "0%";
+        return "<div class='node-hw-row' data-tip-title='" + m.label + "' data-tip-unit='" + m.unit + "' data-tip-desc='" + m.desc + "' style='background:#09090b;border:1px solid #27272a;border-radius:10px;padding:0.65rem 0.85rem;margin-bottom:0.55rem;cursor:help;'>" +
+            "<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;'>" +
+            "<div style='display:flex;align-items:center;gap:7px;'><span>" + m.icon + "</span><strong style='font-family:monospace;font-size:0.8rem;color:#f4f4f5;'>" + m.label + "</strong></div>" +
+            "<span style='font-family:monospace;font-size:0.78rem;font-weight:700;color:#22d3ee;'>" + m.valTxt + "</span></div>" +
+            "<div style='height:5px;width:100%;background:#18181b;border-radius:4px;overflow:hidden;'>" +
+            "<div class='node-hw-bar' data-k='" + m.k + "' data-target-w='" + targetW + "' style='height:100%;width:" + startW + ";background:linear-gradient(90deg,#06b6d4,#a855f7);border-radius:4px;'></div></div></div>";
+    }).join("");
+
+    if (typeof gsap !== "undefined") {
+        container.querySelectorAll(".node-hw-bar").forEach(function(b) {
+            gsap.to(b, { width: b.getAttribute("data-target-w"), duration: 0.65, ease: "power3.out" });
+        });
+    }
+}
+
+
+function _fetchAndPaintNodeHw(hostShort, liveDiv) {
+    fetch("/api/node-metrics?host=" + encodeURIComponent(hostShort))
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+            if (!document.body.contains(liveDiv)) return;
+            if (d.ok) _renderNodeHwRows(liveDiv, d);
+            else liveDiv.innerHTML = "<div style='font-size:0.72rem;color:#fbbf24;'>Sin telemetría disponible: " + (d.error || "") + "</div>";
+        })
+        .catch(function() {});
+}
+
+function runNodeEnhancer() {
+    var dp = document.getElementById("detail-panel");
+    if (!dp) return;
+    var boxes = dp.querySelectorAll(".host-box");
+    if (boxes.length < 2) {
+        if (_nodeHwTimer) { clearInterval(_nodeHwTimer); _nodeHwTimer = null; _renderedNodeKey = ""; }
+        return;
+    }
+
+    var headText = (dp.firstElementChild ? dp.firstElementChild.textContent : "") || "";
+    var m = headText.match(/NODO\s*•\s*([a-zA-Z0-9._-]+)/i);
+    if (!m) return;
+    var hostShort = (typeof currentHostId !== "undefined" && currentHostId) ? currentHostId : m.pop().trim().toLowerCase();
+
+    if (_renderedNodeKey == hostShort && document.getElementById("node-live-hw-box") && document.getElementById("node-roles-filter-bar")) {
+        return;
+    }
+    _renderedNodeKey = hostShort;
+
+    // 1. Barras de Hardware en vivo en la primera .host-box
+    var hwBox = boxes.item(0);
+    var liveDiv = document.getElementById("node-live-hw-box");
+    if (!liveDiv) {
+        liveDiv = document.createElement("div");
+        liveDiv.id = "node-live-hw-box";
+        liveDiv.style.cssText = "margin-top:0.85rem;padding-top:0.85rem;border-top:1px solid #27272a;";
+        liveDiv.innerHTML = "<div style='font-size:0.72rem;color:#22d3ee;'>Consultando telemetría de hardware...</div>";
+        hwBox.appendChild(liveDiv);
+    }
+    _fetchAndPaintNodeHw(hostShort, liveDiv);
+
+    if (_nodeHwTimer) clearInterval(_nodeHwTimer);
+    _nodeHwTimer = setInterval(function() {
+        var curDiv = document.getElementById("node-live-hw-box");
+        if (!curDiv || _renderedNodeKey != hostShort) { clearInterval(_nodeHwTimer); _nodeHwTimer = null; return; }
+        _fetchAndPaintNodeHw(hostShort, curDiv);
+    }, 5000);
+
+    // 2. Filtro Todos / Solo Daemons y controles por rol en la segunda .host-box
+    var rolesBox = boxes.item(1);
+    if (rolesBox && !rolesBox.querySelector("#node-roles-filter-bar")) {
+        var titleEl = rolesBox.firstElementChild;
+        var bar = document.createElement("div");
+        bar.id = "node-roles-filter-bar";
+        bar.style.cssText = "display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:0.65rem;flex-wrap:wrap;";
+        rolesBox.insertBefore(bar, titleEl);
+        bar.appendChild(titleEl);
+
+        var btns = document.createElement("div");
+        btns.style.cssText = "display:inline-flex;gap:5px;";
+        btns.innerHTML =
+            "<button type='button' id='btn-filter-all-roles' class='knox-tab-btn active' style='padding:3px 9px!important;font-size:0.7rem!important;' onclick=\"filterNodeRoles('all')\">Todos</button>" +
+            "<button type='button' id='btn-filter-daemons' class='knox-tab-btn' style='padding:3px 9px!important;font-size:0.7rem!important;' onclick=\"filterNodeRoles('daemons')\">Solo Daemons</button>";
+        bar.appendChild(btns);
+
+        Array.from(rolesBox.children).forEach(function(row) {
+            if (row === bar) return;
+            var txt = (row.textContent || "").trim();
+            var op = txt.indexOf("("), cp = txt.indexOf(")");
+            if (op == -1 || cp == -1) return;
+            var roleType = txt.slice(0, op).trim();
+            var srvName = txt.slice(op + 1, cp).trim();
+            var isGw = roleType.indexOf("GATEWAY") != -1 || /\bNA\b/.test(txt);
+
+            row.setAttribute("data-node-role-row", "1");
+            row.setAttribute("data-is-gateway", isGw ? "1" : "0");
+
+            if (!isGw && !row.querySelector(".node-role-actions")) {
+                var ctrl = document.createElement("span");
+                ctrl.className = "node-role-actions";
+                ctrl.style.cssText = "display:inline-flex;gap:4px;margin-left:8px;";
+                ctrl.innerHTML =
+                    "<button type='button' title='Iniciar' onclick=\"execNodeRoleCmd(event,'" + hostShort + "','" + srvName + "','" + roleType + "','start')\" style='width:22px!important;height:22px!important;padding:0!important;background:#18181b!important;color:#34d399!important;border:1px solid #27272a!important;border-radius:5px!important;font-size:0.65rem!important;cursor:pointer;'>▶</button>" +
+                    "<button type='button' title='Detener' onclick=\"execNodeRoleCmd(event,'" + hostShort + "','" + srvName + "','" + roleType + "','stop')\" style='width:22px!important;height:22px!important;padding:0!important;background:#18181b!important;color:#fb7185!important;border:1px solid #27272a!important;border-radius:5px!important;font-size:0.65rem!important;cursor:pointer;'>■</button>" +
+                    "<button type='button' title='Reiniciar' onclick=\"execNodeRoleCmd(event,'" + hostShort + "','" + srvName + "','" + roleType + "','restart')\" style='width:22px!important;height:22px!important;padding:0!important;background:#18181b!important;color:#22d3ee!important;border:1px solid #27272a!important;border-radius:5px!important;font-size:0.72rem!important;cursor:pointer;'>↻</button>";
+                row.appendChild(ctrl);
+            }
+        });
+    }
+}
+
+function filterNodeRoles(mode) {
+    var dp = document.getElementById("detail-panel");
+    if (!dp) return;
+    var bAll = document.getElementById("btn-filter-all-roles");
+    var bDae = document.getElementById("btn-filter-daemons");
+    if (bAll) bAll.classList.toggle("active", mode == "all");
+    if (bDae) bDae.classList.toggle("active", mode == "daemons");
+    dp.querySelectorAll("[data-node-role-row='1']").forEach(function(r) {
+        r.style.display = (mode == "daemons" && r.getAttribute("data-is-gateway") == "1") ? "none" : "";
+    });
+}
+
+async function execNodeRoleCmd(e, host, service, roleType, action) {
+    if (e) e.stopPropagation();
+    var labels = { start: "INICIAR", stop: "DETENER", restart: "REINICIAR" };
+    if (!confirm("¿Confirmas " + (labels[action] || action) + " " + roleType + " (" + service + ") en " + host + "?")) return;
+    var btn = e ? e.currentTarget : null;
+    if (btn) { btn.style.opacity = "0.4"; btn.disabled = true; }
+    try {
+        var res = await fetch("/api/node-role-action", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ host: host, service: service, role_type: roleType, action: action })
+        });
+        var d = await res.json();
+        alert(d.ok ? ("Orden '" + action + "' enviada a " + roleType + " en " + host + ".") : ("Error: " + (d.error || "Desconocido")));
+    } catch (err) {
+        alert("Error de red: " + err.message);
+    } finally {
+        if (btn) { btn.style.opacity = "1"; btn.disabled = false; }
+    }
+}
+
+setInterval(runNodeEnhancer, 450);

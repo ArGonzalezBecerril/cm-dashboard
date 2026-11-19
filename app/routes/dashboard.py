@@ -665,3 +665,145 @@ def app_storage_rules():
     if request.method == "DELETE":
         rid = request.args.get("id", 0)
         return jsonify(delete_cleanup_rule(rid))
+
+@dashboard_bp.route("/api/node-metrics", methods=["GET"])
+@cm_login_required
+def node_live_metrics():
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import datetime, timedelta, timezone
+
+    target = str(request.args.get("host", "")).strip().lower()
+    if not target:
+        return jsonify({"ok": False, "error": "Falta host"}), 400
+
+    client = get_authenticated_client()
+    host_id = ""
+    total_ram_gb = 0.0
+    num_cores = 1
+
+    try:
+        for h in (client.get("/hosts").get("items") or list()):
+            hid = str(h.get("hostId", ""))
+            hname = str(h.get("hostname", "")).lower()
+            hip = str(h.get("ipAddress", ""))
+            if target in (hid.lower(), hname, hip) or hname.startswith(target + ".") or target in hname:
+                host_id = hid
+                total_ram_gb = round(float(h.get("totalPhysMemBytes", 0)) / (1024 ** 3), 1)
+                num_cores = max(1, int(h.get("numCores", 1)))
+                break
+    except Exception as e:
+        logger.warning(f"[NodeMetrics] Error resolviendo hostId: {e}")
+
+    if not host_id:
+        return jsonify({"ok": False, "error": "Host no encontrado"}), 404
+
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(minutes=8)
+    from_str = start.strftime("%Y-%m-%dT%H:%M:%SZ")
+    to_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def query_metric_thread(tsq):
+        try:
+            raw = client.get(f"/timeseries?query={tsq}&from={from_str}&to={to_str}")
+            total = 0.0
+            found = False
+            for item in (raw.get("items") or list()):
+                for ts in (item.get("timeSeries") or list()):
+                    pts = ts.get("data") or list()
+                    if len(pts):
+                        total += float(pts[-1].get("value", 0))
+                        found = True
+            return total if found else None
+        except Exception:
+            return None
+
+    queries = {
+        "cpu_pct": f"SELECT cpu_percent WHERE hostId = '{host_id}'",
+        "cpu_user": f"SELECT cpu_user_rate WHERE hostId = '{host_id}'",
+        "cpu_sys": f"SELECT cpu_system_rate WHERE hostId = '{host_id}'",
+        "ram_used": f"SELECT physical_memory_used WHERE hostId = '{host_id}'",
+        "ram_tot": f"SELECT physical_memory_total WHERE hostId = '{host_id}'",
+        "disk_used": f"SELECT total_bytes_used_across_filesystems WHERE hostId = '{host_id}'",
+        "disk_cap": f"SELECT total_capacity_across_filesystems WHERE hostId = '{host_id}'",
+        "net_rx": f"SELECT total_bytes_receive_rate_across_network_interfaces WHERE hostId = '{host_id}'",
+        "net_tx": f"SELECT total_bytes_transmit_rate_across_network_interfaces WHERE hostId = '{host_id}'",
+    }
+
+    # Ejecutar las consultas en hilos independientes en paralelo
+    res = {}
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = {k: pool.submit(query_metric_thread, q) for k, q in queries.items()}
+        for k, fut in futures.items():
+            try:
+                res[k] = fut.result(timeout=6)
+            except Exception:
+                res[k] = None
+
+    cpu_pct = res.get("cpu_pct")
+    if cpu_pct is None:
+        u_r = res.get("cpu_user") or 0.0
+        s_r = res.get("cpu_sys") or 0.0
+        cpu_pct = round(min(100.0, ((u_r + s_r) / num_cores) * 100.0), 1)
+    else:
+        cpu_pct = round(float(cpu_pct), 1)
+
+    if res.get("ram_tot"):
+        total_ram_gb = round(res["ram_tot"] / (1024 ** 3), 1)
+    used_ram_gb = round((res.get("ram_used") or 0.0) / (1024 ** 3), 1)
+    ram_pct = round((used_ram_gb / total_ram_gb) * 100.0, 1) if total_ram_gb else 0.0
+
+    disk_used_gb = round((res.get("disk_used") or 0.0) / (1024 ** 3), 1)
+    disk_cap_gb = round((res.get("disk_cap") or 0.0) / (1024 ** 3), 1)
+    disk_pct = round((disk_used_gb / disk_cap_gb) * 100.0, 1) if disk_cap_gb else 0.0
+
+    net_rx = res.get("net_rx") or 0.0
+    net_tx = res.get("net_tx") or 0.0
+
+    return jsonify({
+        "ok": True,
+        "cpu_pct": cpu_pct,
+        "ram_used_gb": used_ram_gb,
+        "ram_total_gb": total_ram_gb,
+        "ram_pct": ram_pct,
+        "disk_used_gb": disk_used_gb,
+        "disk_cap_gb": disk_cap_gb,
+        "disk_pct": disk_pct,
+        "net_rx_mb": round(net_rx / (1024 ** 2), 2),
+        "net_tx_mb": round(net_tx / (1024 ** 2), 2),
+    })
+
+
+@dashboard_bp.route("/api/node-role-action", methods=["POST"])
+@cm_login_required
+def node_role_action():
+    p = request.get_json(silent=True) or {}
+    host_target = str(p.get("host", "")).strip().lower()
+    service_name = str(p.get("service", "")).strip()
+    role_type = str(p.get("role_type", "")).strip().upper()
+    action = str(p.get("action", "")).strip().lower()
+
+    if action not in ("restart", "start", "stop"):
+        return jsonify({"ok": False, "error": "Acción inválida"}), 400
+    client = get_authenticated_client()
+    try:
+        cl_items = (client.get("/clusters").get("items") or list())
+        cluster = next(iter(cl_items)).get("name", "") if len(cl_items) else ""
+        target_host_id = ""
+        for h in (client.get("/hosts").get("items") or list()):
+            hid = str(h.get("hostId", ""))
+            hname = str(h.get("hostname", "")).lower()
+            if host_target in (hid.lower(), hname) or hname.startswith(host_target + "."):
+                target_host_id = hid
+                break
+        roles_data = client.get(f"/clusters/{cluster}/services/{service_name}/roles")
+        matched = [
+            r.get("name") for r in (roles_data.get("items") or list())
+            if str(r.get("type", "")).upper() == role_type
+            and ((r.get("hostRef") or {}).get("hostId") == target_host_id or str((r.get("hostRef") or {}).get("hostname", "")).lower().startswith(host_target))
+        ]
+        if not len(matched):
+            return jsonify({"ok": False, "error": f"Rol {role_type} no hallado en {host_target}"}), 404
+        cmd_res = client.post(f"/clusters/{cluster}/services/{service_name}/roleCommands/{action}", json={"items": matched})
+        return jsonify({"ok": True, "roles": matched, "command": cmd_res})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
